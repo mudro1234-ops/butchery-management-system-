@@ -61,7 +61,7 @@ export default function ModulePage() {
       const [business, departments, records] = await Promise.all([
         supabase.from("businesses").select("name,base_currency").eq("id",membership.business_id).single(),
         supabase.from("departments").select("id").eq("business_id",membership.business_id).eq("active",true),
-        supabase.from(section.table).select(section.columns.join(",")).eq("business_id",membership.business_id).order(section.table==="sales"?"sold_at":section.table==="cashier_shifts"?"opened_at":section.table==="expenses"?"incurred_at":section.table==="purchases"?"purchase_date":section.table==="businesses"?"created_at":"created_at",{ascending:false}).limit(100)
+        supabase.from(section.table).select(section.columns.join(",")).eq("business_id",membership.business_id).order(section.table==="sales"?"sold_at":section.table==="cashier_shifts"?"opened_at":section.table==="expenses"?"incurred_at":section.table==="purchases"?"purchase_date":section.table==="businesses"?"created_at":section.table==="beef_carcasses"?"received_at":section.table==="stock_batches"?"received_at":section.table==="suppliers"?"created_at":"created_at",{ascending:false}).limit(100)
       ]);
       if (!alive) return;
       setBusinessName(business.data?.name || "Business"); setCurrency(business.data?.base_currency || "USD");
@@ -90,11 +90,12 @@ export default function ModulePage() {
     {href:"/dashboard/expenses",label:"Expenses",roles:["owner","manager"]},
     {href:"/dashboard/cash-up",label:"Shifts & Cash-up",roles:["owner","manager","cashier"]},
     {href:"/dashboard/reports",label:"Reports",roles:["owner","manager"]},
+    {href:"/dashboard/settings",label:"Business settings",roles:["owner"]},
     {href:"/dashboard/staff",label:"Staff",roles:["owner"]}
   ];
   return <div className="shell">
     <aside className="sidebar"><div className="brand">BUTCHERY<span style={{color:"#8ec6a6"}}>OS</span><small>MANAGEMENT SUITE</small></div>
-      <nav className="nav"><div className="navlabel">Workspace</div>{links.filter(l=>l.roles.includes(role || "cashier")).map(l=><Link key={l.href} className={l.href==="/dashboard/"+slug?"active":""} href={l.href}>{l.label}</Link>)}<div className="navlabel">Administration</div>{role==="owner"&&<Link className={slug==="settings"?"active":""} href="/dashboard/settings">Business settings</Link>}</nav>
+      <nav className="nav"><div className="navlabel">Workspace</div>{links.filter(l=>l.roles.includes(role || "cashier")).map(l=><Link key={l.href} className={l.href==="/dashboard/"+slug?"active":""} href={l.href}>{l.label}</Link>)}<div className="navlabel">Administration</div></nav>
       <div className="sidefoot">Department-led operations · Zimbabwe-ready</div>
     </aside>
     <main className="main"><header className="topbar"><div className="crumb"><Link href="/dashboard">Workspace</Link> / <strong>{section.title}</strong></div><div className="row"><span className="muted" style={{fontSize:12}}>{role?.replace("_"," ")}</span><Link className="btn secondary" href="/dashboard">Overview</Link></div></header>
