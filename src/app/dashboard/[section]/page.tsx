@@ -61,7 +61,7 @@ export default function ModulePage() {
       const [business, departments, records] = await Promise.all([
         supabase.from("businesses").select("name,base_currency").eq("id",membership.business_id).single(),
         supabase.from("departments").select("id").eq("business_id",membership.business_id).eq("active",true),
-        supabase.from(section.table).select(section.columns.join(",")).eq("business_id",membership.business_id).order(section.table==="sales"?"sold_at":section.table==="cashier_shifts"?"opened_at":section.table==="expenses"?"incurred_at":section.table==="purchases"?"purchase_date":section.table==="businesses"?"created_at":section.table==="beef_carcasses"?"received_at":section.table==="stock_batches"?"received_at":section.table==="suppliers"?"created_at":"created_at",{ascending:false}).limit(100)
+        section.table==="businesses" ? supabase.from("businesses").select(section.columns.join(",")).eq("id",membership.business_id).order("created_at",{ascending:false}).limit(1) : supabase.from(section.table).select(section.columns.join(",")).eq("business_id",membership.business_id).order(section.table==="sales"?"sold_at":section.table==="cashier_shifts"?"opened_at":section.table==="expenses"?"incurred_at":section.table==="purchases"?"purchase_date":section.table==="beef_carcasses"?"received_at":section.table==="stock_batches"?"received_at":"created_at",{ascending:false}).limit(100)
       ]);
       if (!alive) return;
       setBusinessName(business.data?.name || "Business"); setCurrency(business.data?.base_currency || "USD");
@@ -91,6 +91,7 @@ export default function ModulePage() {
     {href:"/dashboard/cash-up",label:"Shifts & Cash-up",roles:["owner","manager","cashier"]},
     {href:"/dashboard/reports",label:"Reports",roles:["owner","manager"]},
     {href:"/dashboard/settings",label:"Business settings",roles:["owner"]},
+    {href:"/dashboard/profile",label:"My account",roles:["owner","manager","cashier","stock_clerk"]},
     {href:"/dashboard/staff",label:"Staff",roles:["owner"]}
   ];
   return <div className="shell">
