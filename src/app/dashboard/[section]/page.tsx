@@ -50,6 +50,14 @@ export default function ModulePage() {
   const [supplierForm,setSupplierForm] = useState({name:"",contact_name:"",phone:"",email:"",address:"",notes:""});
   const [savingSupplier,setSavingSupplier] = useState(false);
   const [supplierMessage,setSupplierMessage] = useState("");
+  const [departments,setDepartments] = useState<Array<{id:string;name:string}>>([]);
+  const [products,setProducts] = useState<Array<{id:string;name:string;unit:string;department_id:string}>>([]);
+  const [productForm,setProductForm] = useState({name:"",category:"",animal_type:"",cut_name:"",grade:"",unit:"kg",department_id:"",barcode:"",track_expiry:false});
+  const [stockForm,setStockForm] = useState({department_id:"",product_id:"",batch_code:"",quantity:"",unit_cost:"0",expiry_date:""});
+  const [savingProduct,setSavingProduct] = useState(false);
+  const [savingStock,setSavingStock] = useState(false);
+  const [stockMessage,setStockMessage] = useState("");
+
 
 
   useEffect(() => {
@@ -64,18 +72,71 @@ export default function ModulePage() {
       setRole(membership.role as Role); setBusinessId(membership.business_id);
       const [business, departments, records] = await Promise.all([
         supabase.from("businesses").select("name,base_currency").eq("id",membership.business_id).single(),
-        supabase.from("departments").select("id").eq("business_id",membership.business_id).eq("active",true),
+        supabase.from("departments").select("id,name").eq("business_id",membership.business_id).eq("active",true),
         section.table==="businesses" ? supabase.from("businesses").select(section.columns.join(",")).eq("id",membership.business_id).order("created_at",{ascending:false}).limit(1) : supabase.from(section.table).select(section.columns.join(",")).eq("business_id",membership.business_id).order(section.table==="sales"?"sold_at":section.table==="cashier_shifts"?"opened_at":section.table==="expenses"?"incurred_at":section.table==="purchases"?"purchase_date":section.table==="beef_carcasses"?"received_at":section.table==="stock_batches"?"received_at":"created_at",{ascending:false}).limit(100)
       ]);
       if (!alive) return;
       setBusinessName(business.data?.name || "Business"); setCurrency(business.data?.base_currency || "USD");
       setDepartmentCount(departments.data?.length || 0);
+      const deptRows=(departments.data||[]) as Array<{id:string;name:string}>;
+      setDepartments(deptRows);
+      if (slug==="stock") {
+        const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
+        const list=(productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string}>;
+        setProducts(list);
+        const preferredDepartment=membership.department_id || deptRows[0]?.id || "";
+        setProductForm(v=>({...v,department_id:v.department_id||preferredDepartment}));
+        setStockForm(v=>({...v,department_id:v.department_id||preferredDepartment}));
+      }
+
       if (records.error) setError(records.error.message); else setRows((records.data || []) as unknown as Row[]);
       setLoading(false);
     })();
     return () => { alive = false; };
   },[router,slug]);
 
+
+
+  async function createProduct(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!businessId || !productForm.department_id || !productForm.name.trim()) return;
+    setSavingProduct(true); setStockMessage("");
+    const {data,error:insertError}=await supabase.from("products").insert({
+      business_id:businessId, department_id:productForm.department_id,
+      name:productForm.name.trim(), category:productForm.category.trim()||null,
+      animal_type:productForm.animal_type.trim()||null, cut_name:productForm.cut_name.trim()||null,
+      grade:productForm.grade.trim()||null, unit:productForm.unit,
+      barcode:productForm.barcode.trim()||null, track_expiry:productForm.track_expiry, active:true
+    }).select("id,name,unit,department_id").single();
+    if(insertError) setStockMessage(insertError.message);
+    else {
+      setProducts(v=>[...v,data as {id:string;name:string;unit:string;department_id:string}].sort((a,b)=>a.name.localeCompare(b.name)));
+      setProductForm(v=>({...v,name:"",category:"",animal_type:"",cut_name:"",grade:"",barcode:""}));
+      setStockMessage("Product added to the catalogue.");
+    }
+    setSavingProduct(false);
+  }
+
+  async function receiveStock(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!businessId || !stockForm.department_id || !stockForm.product_id) return;
+    setSavingStock(true); setStockMessage("");
+    const product=products.find(p=>p.id===stockForm.product_id);
+    if(!product) { setStockMessage("Select a valid product."); setSavingStock(false); return; }
+    const {error:receiveError}=await supabase.rpc("receive_stock",{
+      p_business_id:businessId,p_department_id:stockForm.department_id,p_product_id:stockForm.product_id,
+      p_batch_code:stockForm.batch_code.trim(),p_quantity:Number(stockForm.quantity),p_unit:product.unit,
+      p_unit_cost:Number(stockForm.unit_cost||0),p_expiry_date:stockForm.expiry_date||null
+    });
+    if(receiveError) setStockMessage(receiveError.message);
+    else {
+      setStockForm(v=>({...v,product_id:"",batch_code:"",quantity:"",unit_cost:"0",expiry_date:""}));
+      const {data,error:reloadError}=await supabase.from("stock_batches").select(section.columns.join(",")).eq("business_id",businessId).order("received_at",{ascending:false}).limit(100);
+      if(reloadError) setStockMessage("Stock received, but the register could not refresh: "+reloadError.message);
+      else {setRows((data||[]) as unknown as Row[]);setStockMessage("Stock received successfully. Batch and movement were recorded together.");}
+    }
+    setSavingStock(false);
+  }
 
   async function createSupplier(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -134,6 +195,39 @@ export default function ModulePage() {
       {error && <p className="error">{error}</p>}
       <div className="grid" style={{gridTemplateColumns:"repeat(3,minmax(0,1fr))"}}>{slug==="sales"||slug==="reports"?<><article className="card"><div className="metric-label">Sales in loaded records</div><div className="metric">{currency} {totals.sales.toFixed(2)}</div></article><article className="card"><div className="metric-label">Cost of goods sold</div><div className="metric">{currency} {totals.cogs.toFixed(2)}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:slug==="expenses"?<><article className="card"><div className="metric-label">Loaded expenses</div><div className="metric">{currency} {totals.expenses.toFixed(2)}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:<><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Workspace</div><div className="metric" style={{fontSize:18}}>{role?.replace("_"," ")}</div></article></>}</div>
 
+
+      {slug==="stock" && (role==="owner" || role==="manager" || role==="stock_clerk") && <>
+        <section className="card" style={{marginBottom:16}}>
+          <h2 className="section-title">Product catalogue</h2>
+          <p className="muted" style={{fontSize:12,marginTop:6}}>Create products within the correct department. Units include kilograms, pieces, crates and packets.</p>
+          <form onSubmit={createProduct} className="formgrid" style={{marginTop:14}}>
+            <label>Product name<input required value={productForm.name} onChange={e=>setProductForm(v=>({...v,name:e.target.value}))} placeholder="e.g. Beef rump steak"/></label>
+            <label>Department<select required value={productForm.department_id} onChange={e=>setProductForm(v=>({...v,department_id:e.target.value}))}><option value="">Choose department</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+            <label>Category<input value={productForm.category} onChange={e=>setProductForm(v=>({...v,category:e.target.value}))} placeholder="Beef / chicken / pork"/></label>
+            <label>Animal type<input value={productForm.animal_type} onChange={e=>setProductForm(v=>({...v,animal_type:e.target.value}))} placeholder="Beef, goat, chicken..."/></label>
+            <label>Cut / product type<input value={productForm.cut_name} onChange={e=>setProductForm(v=>({...v,cut_name:e.target.value}))} placeholder="Rump, brisket, wings..."/></label>
+            <label>Grade<input value={productForm.grade} onChange={e=>setProductForm(v=>({...v,grade:e.target.value}))} placeholder="Commercial / Economy / Super"/></label>
+            <label>Stock unit<select value={productForm.unit} onChange={e=>setProductForm(v=>({...v,unit:e.target.value}))}><option value="kg">Kilograms (kg)</option><option value="piece">Pieces</option><option value="crate">Crates</option><option value="packet">Packets</option><option value="other">Other</option></select></label>
+            <label>Barcode (optional)<input value={productForm.barcode} onChange={e=>setProductForm(v=>({...v,barcode:e.target.value}))} placeholder="Barcode"/></label>
+            <label style={{display:"flex",alignItems:"center",gap:8}}><input type="checkbox" checked={productForm.track_expiry} onChange={e=>setProductForm(v=>({...v,track_expiry:e.target.checked}))}/> Track expiry dates</label>
+            <button className="btn" type="submit" disabled={savingProduct}>{savingProduct?"Saving product…":"Add product"}</button>
+          </form>
+        </section>
+        <section className="card" style={{marginBottom:16}}>
+          <h2 className="section-title">Receive stock into a batch</h2>
+          <p className="muted" style={{fontSize:12,marginTop:6}}>A successful receipt creates the batch and its stock movement in one database transaction. Negative quantities are rejected.</p>
+          <form onSubmit={receiveStock} className="formgrid" style={{marginTop:14}}>
+            <label>Department<select required value={stockForm.department_id} onChange={e=>setStockForm(v=>({...v,department_id:e.target.value,product_id:""}))}><option value="">Choose department</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+            <label>Product<select required value={stockForm.product_id} onChange={e=>setStockForm(v=>({...v,product_id:e.target.value}))}><option value="">Choose product</option>{products.filter(p=>p.department_id===stockForm.department_id).map(p=><option key={p.id} value={p.id}>{p.name} ({p.unit})</option>)}</select></label>
+            <label>Batch / delivery reference<input required value={stockForm.batch_code} onChange={e=>setStockForm(v=>({...v,batch_code:e.target.value}))} placeholder="e.g. INV-2026-001"/></label>
+            <label>Quantity received<input required type="number" min="0.001" step="0.001" value={stockForm.quantity} onChange={e=>setStockForm(v=>({...v,quantity:e.target.value}))} placeholder="0.000"/></label>
+            <label>Unit cost<input required type="number" min="0" step="0.01" value={stockForm.unit_cost} onChange={e=>setStockForm(v=>({...v,unit_cost:e.target.value}))} placeholder="0.00"/></label>
+            <label>Expiry date (if applicable)<input type="date" value={stockForm.expiry_date} onChange={e=>setStockForm(v=>({...v,expiry_date:e.target.value}))}/></label>
+            <button className="btn" type="submit" disabled={savingStock || products.filter(p=>p.department_id===stockForm.department_id).length===0}>{savingStock?"Receiving stock…":"Receive stock"}</button>
+          </form>
+          {stockMessage && <p className={stockMessage.includes("successfully")||stockMessage.includes("catalogue")?"success":"notice"} style={{marginTop:12}}>{stockMessage}</p>}
+        </section>
+      </>}
       {slug==="suppliers" && (role==="owner" || role==="manager") && <section className="card" style={{marginBottom:16}}>
         <h2 className="section-title">Add supplier</h2>
         <p className="muted" style={{fontSize:12,marginTop:6}}>Save a supplier once, then select them when recording deliveries and purchases.</p>
