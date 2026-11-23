@@ -65,6 +65,11 @@ export default function ModulePage() {
   const [processingForm,setProcessingForm] = useState({carcass_id:"",waste_loss_kg:"0",unallocated_kg:"0",notes:"",outputs:[{product_id:"",output_type:"saleable",weight_kg:""}]});
   const [processingMessage,setProcessingMessage] = useState("");
   const [savingProcessing,setSavingProcessing] = useState(false);
+  const [stockCounts,setStockCounts] = useState<Array<{id:string;product_id:string;batch_id:string|null;counted_quantity:number;system_quantity:number;variance:number|null;approved_by:string|null;notes:string|null}>>([]);
+  const [stockCountForm,setStockCountForm] = useState({department_id:"",batch_id:"",counted_quantity:"",notes:""});
+  const [stockCountMessage,setStockCountMessage] = useState("");
+  const [savingCount,setSavingCount] = useState(false);
+
 
   const [purchaseForm,setPurchaseForm] = useState({department_id:"",supplier_id:"",reference_no:"",invoice_no:"",currency:"USD",exchange_rate:"1",product_id:"",quantity:"",unit_cost:"",batch_code:"",expiry_date:""});
   const [savingPurchase,setSavingPurchase] = useState(false);
@@ -148,6 +153,15 @@ export default function ModulePage() {
         const preferredDepartment=membership.department_id || deptRows[0]?.id || "";
         setPurchaseForm(v=>({...v,department_id:v.department_id||preferredDepartment}));
       }
+      if (slug==="stock") {
+        const [{data:batchRows},{data:countRows}]=await Promise.all([
+          supabase.from("stock_batches").select("id,batch_code,product_id,quantity_on_hand,unit,unit_cost,department_id").eq("business_id",membership.business_id).order("received_at",{ascending:true}),
+          supabase.from("stock_counts").select("id,product_id,batch_id,counted_quantity,system_quantity,variance,approved_by,notes").eq("business_id",membership.business_id).order("counted_at",{ascending:false}).limit(50)
+        ]);
+        setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
+        setStockCounts((countRows||[]) as Array<{id:string;product_id:string;batch_id:string|null;counted_quantity:number;system_quantity:number;variance:number|null;approved_by:string|null;notes:string|null}>);
+        const defaultDepartment=membership.department_id || deptRows[0]?.id || "";
+        setStockCountForm(v=>({...v,department_id:v.department_id||defaultDepartment}));
       if (slug==="stock") {
         const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
         const list=(productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string;expected_sale_price?:number}>;
@@ -292,6 +306,44 @@ export default function ModulePage() {
       else {setRows((data||[]) as unknown as Row[]);setPurchaseMessage("Purchase recorded. Purchase line, stock batch and stock movement were created together.");}
     }
     setSavingPurchase(false);
+  }
+
+  async function submitStockCount(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const batch=posBatches.find(b=>b.id===stockCountForm.batch_id);
+    const quantity=Number(stockCountForm.counted_quantity);
+    if(!batch||!Number.isFinite(quantity)||quantity<0){setStockCountMessage("Select a batch and enter a valid physical count.");return;}
+    setSavingCount(true);setStockCountMessage("");
+    const {data:{user}}=await supabase.auth.getUser();
+    const {error:insertError}=await supabase.from("stock_counts").insert({
+      business_id:businessId,department_id:batch.department_id,product_id:batch.product_id,batch_id:batch.id,
+      counted_quantity:quantity,system_quantity:Number(batch.quantity_on_hand),
+      variance:Number((quantity-Number(batch.quantity_on_hand)).toFixed(3)),
+      counted_by:user?.id||null,notes:stockCountForm.notes.trim()||null
+    });
+    if(insertError) setStockCountMessage(insertError.message);
+    else {
+      setStockCountForm(v=>({...v,batch_id:"",counted_quantity:"",notes:""}));
+      const {data}=await supabase.from("stock_counts").select("id,product_id,batch_id,counted_quantity,system_quantity,variance,approved_by,notes").eq("business_id",businessId).order("counted_at",{ascending:false}).limit(50);
+      setStockCounts((data||[]) as Array<{id:string;product_id:string;batch_id:string|null;counted_quantity:number;system_quantity:number;variance:number|null;approved_by:string|null;notes:string|null}>);
+      setStockCountMessage("Physical count submitted for manager approval. Stock has not changed yet.");
+    }
+    setSavingCount(false);
+  }
+
+  async function approveStockCount(id:string) {
+    setStockCountMessage("");
+    const {error:approveError}=await supabase.rpc("approve_stock_count",{p_count_id:id});
+    if(approveError) setStockCountMessage(approveError.message);
+    else {
+      const [{data:countRows},{data:batchRows}]=await Promise.all([
+        supabase.from("stock_counts").select("id,product_id,batch_id,counted_quantity,system_quantity,variance,approved_by,notes").eq("business_id",businessId).order("counted_at",{ascending:false}).limit(50),
+        supabase.from("stock_batches").select("id,batch_code,product_id,quantity_on_hand,unit,unit_cost,department_id").eq("business_id",businessId).order("received_at",{ascending:true})
+      ]);
+      setStockCounts((countRows||[]) as Array<{id:string;product_id:string;batch_id:string|null;counted_quantity:number;system_quantity:number;variance:number|null;approved_by:string|null;notes:string|null}>);
+      setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
+      setStockCountMessage("Stock count approved and adjustment movement recorded.");
+    }
   }
 
   async function finalizeProcessing(event: React.FormEvent<HTMLFormElement>) {
@@ -565,6 +617,20 @@ export default function ModulePage() {
           <button className="btn" type="submit" disabled={savingCarcass}>{savingCarcass?"Saving carcass…":"Record carcass"}</button>
         </form>
         {carcassMessage && <p className={carcassMessage.includes("recorded")?"success":"notice"} style={{marginTop:12}}>{carcassMessage}</p>}
+      </section>}
+      {slug==="stock" && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Physical stock count</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>Stock clerks submit counts; a manager approves any variance before on-hand stock changes.</p>
+        <form onSubmit={submitStockCount} className="formgrid" style={{marginTop:14}}>
+          <label>Department<select required value={stockCountForm.department_id} onChange={e=>setStockCountForm(v=>({...v,department_id:e.target.value,batch_id:""}))}><option value="">Choose department</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+          <label>Batch<select required value={stockCountForm.batch_id} onChange={e=>setStockCountForm(v=>({...v,batch_id:e.target.value}))}><option value="">Choose batch</option>{posBatches.filter(b=>b.department_id===stockCountForm.department_id).map(b=><option key={b.id} value={b.id}>{b.batch_code} · {products.find(p=>p.id===b.product_id)?.name||b.product_id} · system {b.quantity_on_hand} {b.unit}</option>)}</select></label>
+          <label>Physical quantity counted<input required type="number" min="0" step="0.001" value={stockCountForm.counted_quantity} onChange={e=>setStockCountForm(v=>({...v,counted_quantity:e.target.value}))}/></label>
+          <label>Notes / explanation<input value={stockCountForm.notes} onChange={e=>setStockCountForm(v=>({...v,notes:e.target.value}))}/></label>
+          <button className="btn" type="submit" disabled={savingCount}>{savingCount?"Submitting…":"Submit count for approval"}</button>
+        </form>
+        {stockCountMessage && <p className={stockCountMessage.includes("submitted")||stockCountMessage.includes("approved")?"success":"notice"} style={{marginTop:12}}>{stockCountMessage}</p>}
+        <h3 className="section-title" style={{marginTop:18}}>Recent physical counts</h3>
+        {stockCounts.length===0?<p className="muted" style={{fontSize:12,marginTop:10}}>No physical counts recorded yet.</p>:<div style={{overflowX:"auto",marginTop:10}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr><th style={{textAlign:"left",padding:8}}>Batch</th><th style={{textAlign:"left",padding:8}}>System</th><th style={{textAlign:"left",padding:8}}>Counted</th><th style={{textAlign:"left",padding:8}}>Variance</th><th style={{textAlign:"left",padding:8}}>Status</th><th style={{padding:8}}>Action</th></tr></thead><tbody>{stockCounts.map(sc=><tr key={sc.id} style={{borderTop:"1px solid var(--line)"}}><td style={{padding:8}}>{posBatches.find(b=>b.id===sc.batch_id)?.batch_code||"Batch"}</td><td style={{padding:8}}>{sc.system_quantity}</td><td style={{padding:8}}>{sc.counted_quantity}</td><td style={{padding:8}}>{sc.variance??"—"}</td><td style={{padding:8}}>{sc.approved_by?"Approved":"Pending"}</td><td style={{padding:8}}>{(role==="owner"||role==="manager")&&!sc.approved_by?<button className="btn secondary" type="button" onClick={()=>approveStockCount(sc.id)}>Approve</button>:"—"}</td></tr>)}</tbody></table></div>}
       </section>}
       {slug==="stock" && (role==="owner" || role==="manager" || role==="stock_clerk") && <>
         <section className="card" style={{marginBottom:16}}>
