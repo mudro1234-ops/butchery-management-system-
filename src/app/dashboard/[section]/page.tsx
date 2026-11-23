@@ -87,6 +87,8 @@ export default function ModulePage() {
   const [supplierPayForm,setSupplierPayForm] = useState({supplier_id:"",purchase_id:"",amount:"",currency:"USD",payment_method:"cash",reference_no:""});
   const [supplierPayMessage,setSupplierPayMessage] = useState("");
   const [savingFinance,setSavingFinance] = useState(false);
+  const [reportExpenses,setReportExpenses] = useState<Array<{amount:number;currency:string;category:string;incurred_at:string}>>([]);
+
 
 
 
@@ -142,6 +144,10 @@ export default function ModulePage() {
         setShiftForm(v=>({...v,department_id:v.department_id||defaultDepartment}));
         setPosForm(v=>({...v,department_id:v.department_id||defaultDepartment,shift_id:v.shift_id||(shift?.id||"")}));
         setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
+      }
+      if (slug==="reports") {
+        const {data:expenseRows}=await supabase.from("expenses").select("amount,currency,category,incurred_at").eq("business_id",membership.business_id).order("incurred_at",{ascending:false}).limit(1000);
+        setReportExpenses((expenseRows||[]) as Array<{amount:number;currency:string;category:string;incurred_at:string}>);
       }
       if (slug==="purchases" || slug==="expenses") {
         const [{data:productRows},{data:supplierRows}]=await Promise.all([
@@ -468,6 +474,23 @@ export default function ModulePage() {
     setSavingSupplier(false);
   }
 
+  const reportByCurrency = useMemo(() => {
+    const groups=new Map<string,{currency:string;sales:number;cogs:number;expenses:number;transactions:number}>();
+    for(const row of rows) {
+      const key=String(row.currency||currency);
+      const item=groups.get(key)||{currency:key,sales:0,cogs:0,expenses:0,transactions:0};
+      if(row.status==="posted") {item.sales+=Number(row.total||0);item.cogs+=Number(row.cost_of_goods||0);item.transactions+=1;}
+      groups.set(key,item);
+    }
+    for(const expense of reportExpenses) {
+      const key=String(expense.currency||currency);
+      const item=groups.get(key)||{currency:key,sales:0,cogs:0,expenses:0,transactions:0};
+      item.expenses+=Number(expense.amount||0);
+      groups.set(key,item);
+    }
+    return Array.from(groups.values()).sort((a,b)=>a.currency.localeCompare(b.currency));
+  },[rows,reportExpenses,currency]);
+
   const totals = useMemo(() => {
     const sum = (key:string) => rows.reduce((n,r)=>n+Number(r[key]||0),0);
     return {sales:sum("total"),cogs:sum("cost_of_goods"),expenses:sum("amount"),stock:sum("quantity_on_hand")};
@@ -683,6 +706,11 @@ export default function ModulePage() {
       <section className="card"><div className="row"><h2 className="section-title">{section.title} register</h2><span className="muted" style={{fontSize:11}}>Latest 100 records · live database</span></div>
       {rows.length===0?<div className="notice" style={{marginTop:16}}>No records are available yet. Once authorized transactions are entered, they will appear here. This page does not create sample data.</div>:<div style={{overflowX:"auto",marginTop:14}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr>{section.columns.map(c=><th key={c} style={{textAlign:"left",padding:11,whiteSpace:"nowrap",background:"#f7faf7"}}>{section.labels[c]||c}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={String(r.id||i)} style={{borderTop:"1px solid var(--line)"}}>{section.columns.map(c=><td key={c} style={{padding:11,whiteSpace:"nowrap",maxWidth:240,overflow:"hidden",textOverflow:"ellipsis"}}>{display(r[c])}</td>)}</tr>)}</tbody></table></div>}
       </section>
+      {slug==="reports" && <section className="card" style={{marginBottom:16}}>
+        <div className="row"><h2 className="section-title">Financial activity by currency</h2><span className="muted" style={{fontSize:11}}>Latest loaded sales and expenses</span></div>
+        {reportByCurrency.length===0?<p className="muted" style={{fontSize:12,marginTop:12}}>No posted sales or expenses have been recorded yet.</p>:<div style={{overflowX:"auto",marginTop:12}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr><th style={{textAlign:"left",padding:9}}>Currency</th><th style={{textAlign:"right",padding:9}}>Sales</th><th style={{textAlign:"right",padding:9}}>COGS recorded</th><th style={{textAlign:"right",padding:9}}>Operating expenses</th><th style={{textAlign:"right",padding:9}}>Transactions</th></tr></thead><tbody>{reportByCurrency.map(r=><tr key={r.currency} style={{borderTop:"1px solid var(--line)"}}><td style={{padding:9}}>{r.currency}</td><td style={{padding:9,textAlign:"right"}}>{r.sales.toFixed(2)}</td><td style={{padding:9,textAlign:"right"}}>{r.cogs.toFixed(2)}</td><td style={{padding:9,textAlign:"right"}}>{r.expenses.toFixed(2)}</td><td style={{padding:9,textAlign:"right"}}>{r.transactions}</td></tr>)}</tbody></table></div>}
+        <p className="notice" style={{marginTop:12}}>These are operational totals grouped by transaction currency. They are not yet a consolidated profit-and-loss statement: currency conversion and cost-currency normalization must be completed before net profit is reported.</p>
+      </section>}
       {slug==="processing"&&<div className="notice" style={{marginTop:16}}>Processing control rule: input carcass weight must reconcile to saleable cuts + usable by-products + waste/loss + any explicit unallocated discrepancy. Do not classify saleable bones or fat as waste.</div>}
       {slug==="cash-up"&&<div className="notice" style={{marginTop:16}}>Cash reconciliation formula: opening float + cash sales − cash expenses/refunds = expected cash. Compare with counted cash and record the variance; bank and mobile-money totals are reconciled separately.</div>}
       {slug==="reports"&&<div className="notice" style={{marginTop:16}}>Profit reporting is not yet a complete accounting statement. The dashboard must also reconcile purchase cost allocation, stock movements and expenses before presenting net profit.</div>}
