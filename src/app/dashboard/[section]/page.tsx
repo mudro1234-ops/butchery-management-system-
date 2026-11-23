@@ -61,6 +61,10 @@ export default function ModulePage() {
   const [carcassForm,setCarcassForm] = useState({department_id:"",supplier_id:"",carcass_code:"",grade:"Commercial",input_weight_kg:"",purchase_price_per_kg:"",invoice_no:""});
   const [savingCarcass,setSavingCarcass] = useState(false);
   const [carcassMessage,setCarcassMessage] = useState("");
+  const [purchaseForm,setPurchaseForm] = useState({department_id:"",supplier_id:"",reference_no:"",invoice_no:"",currency:"USD",exchange_rate:"1",product_id:"",quantity:"",unit_cost:"",batch_code:"",expiry_date:""});
+  const [savingPurchase,setSavingPurchase] = useState(false);
+  const [purchaseMessage,setPurchaseMessage] = useState("");
+
 
 
 
@@ -91,6 +95,16 @@ export default function ModulePage() {
         const redMeat=deptRows.find(d=>d.code==="red_meat")?.id || membership.department_id || deptRows[0]?.id || "";
         setCarcassForm(v=>({...v,department_id:v.department_id||redMeat}));
       }
+      if (slug==="purchases") {
+        const [{data:productRows},{data:supplierRows}]=await Promise.all([
+          supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name"),
+          supabase.from("suppliers").select("id,name").eq("business_id",membership.business_id).eq("active",true).order("name")
+        ]);
+        setProducts((productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string}>);
+        setSuppliers((supplierRows||[]) as Array<{id:string;name:string}>);
+        const preferredDepartment=membership.department_id || deptRows[0]?.id || "";
+        setPurchaseForm(v=>({...v,department_id:v.department_id||preferredDepartment}));
+      }
       if (slug==="stock") {
         const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
         const list=(productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string}>;
@@ -107,6 +121,33 @@ export default function ModulePage() {
   },[router,slug]);
 
 
+
+  async function recordPurchase(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!businessId || !purchaseForm.department_id || !purchaseForm.product_id) return;
+    setSavingPurchase(true); setPurchaseMessage("");
+    const product=products.find(p=>p.id===purchaseForm.product_id);
+    const quantity=Number(purchaseForm.quantity), unitCost=Number(purchaseForm.unit_cost), rate=Number(purchaseForm.exchange_rate);
+    if(!product || !Number.isFinite(quantity)||quantity<=0||!Number.isFinite(unitCost)||unitCost<0||!Number.isFinite(rate)||rate<=0) {
+      setPurchaseMessage("Check the product, quantity, unit cost and exchange rate."); setSavingPurchase(false); return;
+    }
+    const {data:{user}}=await supabase.auth.getUser();
+    const {error:rpcError}=await supabase.rpc("record_stock_purchase",{
+      p_business_id:businessId,p_department_id:purchaseForm.department_id,p_supplier_id:purchaseForm.supplier_id||null,
+      p_reference_no:purchaseForm.reference_no.trim(),p_invoice_no:purchaseForm.invoice_no.trim()||null,
+      p_currency:purchaseForm.currency,p_exchange_rate:rate,p_product_id:product.id,
+      p_quantity:quantity,p_unit_cost:unitCost,p_batch_code:purchaseForm.batch_code.trim(),
+      p_expiry_date:purchaseForm.expiry_date||null
+    });
+    if(rpcError) setPurchaseMessage(rpcError.message);
+    else {
+      setPurchaseForm(v=>({...v,reference_no:"",invoice_no:"",product_id:"",quantity:"",unit_cost:"",batch_code:"",expiry_date:""}));
+      const {data,error:reloadError}=await supabase.from("purchases").select(section.columns.join(",")).eq("business_id",businessId).order("purchase_date",{ascending:false}).limit(100);
+      if(reloadError) setPurchaseMessage("Purchase recorded, but the register could not refresh: "+reloadError.message);
+      else {setRows((data||[]) as unknown as Row[]);setPurchaseMessage("Purchase recorded. Purchase line, stock batch and stock movement were created together.");}
+    }
+    setSavingPurchase(false);
+  }
 
   async function receiveCarcass(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -234,6 +275,26 @@ export default function ModulePage() {
       <div className="grid" style={{gridTemplateColumns:"repeat(3,minmax(0,1fr))"}}>{slug==="sales"||slug==="reports"?<><article className="card"><div className="metric-label">Sales in loaded records</div><div className="metric">{currency} {totals.sales.toFixed(2)}</div></article><article className="card"><div className="metric-label">Cost of goods sold</div><div className="metric">{currency} {totals.cogs.toFixed(2)}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:slug==="expenses"?<><article className="card"><div className="metric-label">Loaded expenses</div><div className="metric">{currency} {totals.expenses.toFixed(2)}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:<><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Workspace</div><div className="metric" style={{fontSize:18}}>{role?.replace("_"," ")}</div></article></>}</div>
 
 
+      {slug==="purchases" && (role==="owner" || role==="manager" || role==="stock_clerk") && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Record supplier purchase and delivery</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>This records the purchase, line item, incoming stock batch and stock movement atomically. Supplier payments are recorded separately and do not add the purchase cost again.</p>
+        <form onSubmit={recordPurchase} className="formgrid" style={{marginTop:14}}>
+          <label>Purchase reference<input required value={purchaseForm.reference_no} onChange={e=>setPurchaseForm(v=>({...v,reference_no:e.target.value}))} placeholder="e.g. PUR-2026-001"/></label>
+          <label>Department<select required value={purchaseForm.department_id} onChange={e=>setPurchaseForm(v=>({...v,department_id:e.target.value,product_id:""}))}><option value="">Choose department</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+          <label>Supplier<select value={purchaseForm.supplier_id} onChange={e=>setPurchaseForm(v=>({...v,supplier_id:e.target.value}))}><option value="">Select supplier</option>{suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+          <label>Invoice number<input value={purchaseForm.invoice_no} onChange={e=>setPurchaseForm(v=>({...v,invoice_no:e.target.value}))} placeholder="Supplier invoice"/></label>
+          <label>Product<select required value={purchaseForm.product_id} onChange={e=>setPurchaseForm(v=>({...v,product_id:e.target.value}))}><option value="">Choose product</option>{products.filter(p=>p.department_id===purchaseForm.department_id).map(p=><option key={p.id} value={p.id}>{p.name} ({p.unit})</option>)}</select></label>
+          <label>Quantity<input required type="number" min="0.001" step="0.001" value={purchaseForm.quantity} onChange={e=>setPurchaseForm(v=>({...v,quantity:e.target.value}))}/></label>
+          <label>Unit cost<input required type="number" min="0" step="0.01" value={purchaseForm.unit_cost} onChange={e=>setPurchaseForm(v=>({...v,unit_cost:e.target.value}))}/></label>
+          <label>Currency<select value={purchaseForm.currency} onChange={e=>setPurchaseForm(v=>({...v,currency:e.target.value}))}><option>USD</option><option>ZiG</option></select></label>
+          <label>Exchange rate to base currency<input required type="number" min="0.000001" step="0.000001" value={purchaseForm.exchange_rate} onChange={e=>setPurchaseForm(v=>({...v,exchange_rate:e.target.value}))}/></label>
+          <label>Stock batch reference<input required value={purchaseForm.batch_code} onChange={e=>setPurchaseForm(v=>({...v,batch_code:e.target.value}))} placeholder="Batch / delivery code"/></label>
+          <label>Expiry date (optional)<input type="date" value={purchaseForm.expiry_date} onChange={e=>setPurchaseForm(v=>({...v,expiry_date:e.target.value}))}/></label>
+          <div className="notice">Line total: {purchaseForm.currency} {(Number(purchaseForm.quantity||0)*Number(purchaseForm.unit_cost||0)).toFixed(2)}</div>
+          <button className="btn" type="submit" disabled={savingPurchase || products.filter(p=>p.department_id===purchaseForm.department_id).length===0}>{savingPurchase?"Recording purchase…":"Record purchase & receive stock"}</button>
+        </form>
+        {purchaseMessage && <p className={purchaseMessage.includes("recorded.")?"success":"notice"} style={{marginTop:12}}>{purchaseMessage}</p>}
+      </section>}
       {slug==="processing" && (role==="owner" || role==="manager" || role==="stock_clerk") && <section className="card" style={{marginBottom:16}}>
         <h2 className="section-title">Receive a beef carcass</h2>
         <p className="muted" style={{fontSize:12,marginTop:6}}>Record each carcass separately so its grade, supplier, weight and purchase cost remain traceable through cutting.</p>
