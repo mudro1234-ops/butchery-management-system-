@@ -105,6 +105,10 @@ export default function ModulePage() {
         setCarcassForm(v=>({...v,department_id:v.department_id||redMeat}));
       }
       if (slug==="sales" || slug==="cash-up") {
+        if(slug==="sales") {
+          const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
+          setProducts((productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string}>);
+        }
         const [{data:shiftRows},{data:batchRows}]=await Promise.all([
           supabase.from("cashier_shifts").select("id,department_id,opening_cash").eq("business_id",membership.business_id).eq("cashier_id",user.id).eq("status","open").order("opened_at",{ascending:false}).limit(1),
           supabase.from("stock_batches").select("id,batch_code,product_id,quantity_on_hand,unit,unit_cost,department_id").eq("business_id",membership.business_id).gt("quantity_on_hand",0).order("received_at",{ascending:true})
