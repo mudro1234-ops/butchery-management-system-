@@ -162,6 +162,7 @@ export default function ModulePage() {
         setStockCounts((countRows||[]) as Array<{id:string;product_id:string;batch_id:string|null;counted_quantity:number;system_quantity:number;variance:number|null;approved_by:string|null;notes:string|null}>);
         const defaultDepartment=membership.department_id || deptRows[0]?.id || "";
         setStockCountForm(v=>({...v,department_id:v.department_id||defaultDepartment}));
+      }
       if (slug==="stock") {
         const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
         const list=(productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string;expected_sale_price?:number}>;
