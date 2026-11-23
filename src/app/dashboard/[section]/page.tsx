@@ -122,11 +122,6 @@ export default function ModulePage() {
         setCarcassForm(v=>({...v,department_id:v.department_id||redMeat}));
       }
 
-        const {data:supplierRows}=await supabase.from("suppliers").select("id,name").eq("business_id",membership.business_id).eq("active",true).order("name");
-        setSuppliers((supplierRows||[]) as Array<{id:string;name:string}>);
-        const redMeat=deptRows.find(d=>d.code==="red_meat")?.id || membership.department_id || deptRows[0]?.id || "";
-        setCarcassForm(v=>({...v,department_id:v.department_id||redMeat}));
-      }
       if (slug==="sales" || slug==="cash-up") {
         if(slug==="sales") {
           const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id,expected_sale_price").eq("business_id",membership.business_id).eq("active",true).order("name");
@@ -155,7 +150,7 @@ export default function ModulePage() {
       }
       if (slug==="stock") {
         const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
-        const list=(productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string}>;
+        const list=(productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string;expected_sale_price?:number}>;
         setProducts(list);
         const preferredDepartment=membership.department_id || deptRows[0]?.id || "";
         setProductForm(v=>({...v,department_id:v.department_id||preferredDepartment}));
@@ -364,10 +359,10 @@ export default function ModulePage() {
       animal_type:productForm.animal_type.trim()||null, cut_name:productForm.cut_name.trim()||null,
       grade:productForm.grade.trim()||null, unit:productForm.unit, expected_sale_price:Number(productForm.expected_sale_price||0),
       barcode:productForm.barcode.trim()||null, track_expiry:productForm.track_expiry, active:true
-    }).select("id,name,unit,department_id").single();
+    }).select("id,name,unit,department_id,expected_sale_price").single();
     if(insertError) setStockMessage(insertError.message);
     else {
-      setProducts(v=>[...v,data as {id:string;name:string;unit:string;department_id:string}].sort((a,b)=>a.name.localeCompare(b.name)));
+      setProducts(v=>[...v,data as {id:string;name:string;unit:string;department_id:string;expected_sale_price?:number}].sort((a,b)=>a.name.localeCompare(b.name)));
       setProductForm(v=>({...v,name:"",category:"",animal_type:"",cut_name:"",grade:"",expected_sale_price:"0",barcode:""}));
       setStockMessage("Product added to the catalogue.");
     }
