@@ -51,8 +51,8 @@ export default function ModulePage() {
   const [savingSupplier,setSavingSupplier] = useState(false);
   const [supplierMessage,setSupplierMessage] = useState("");
   const [departments,setDepartments] = useState<Array<{id:string;name:string;code?:string}>>([]);
-  const [products,setProducts] = useState<Array<{id:string;name:string;unit:string;department_id:string}>>([]);
-  const [productForm,setProductForm] = useState({name:"",category:"",animal_type:"",cut_name:"",grade:"",unit:"kg",department_id:"",barcode:"",track_expiry:false});
+  const [products,setProducts] = useState<Array<{id:string;name:string;unit:string;department_id:string;expected_sale_price?:number}>>([]);
+  const [productForm,setProductForm] = useState({name:"",category:"",animal_type:"",cut_name:"",grade:"",unit:"kg",expected_sale_price:"0",department_id:"",barcode:"",track_expiry:false});
   const [stockForm,setStockForm] = useState({department_id:"",product_id:"",batch_code:"",quantity:"",unit_cost:"0",expiry_date:""});
   const [savingProduct,setSavingProduct] = useState(false);
   const [savingStock,setSavingStock] = useState(false);
@@ -61,6 +61,11 @@ export default function ModulePage() {
   const [carcassForm,setCarcassForm] = useState({department_id:"",supplier_id:"",carcass_code:"",grade:"Commercial",input_weight_kg:"",purchase_price_per_kg:"",invoice_no:""});
   const [savingCarcass,setSavingCarcass] = useState(false);
   const [carcassMessage,setCarcassMessage] = useState("");
+  const [processingCarcasses,setProcessingCarcasses] = useState<Array<{id:string;carcass_code:string;grade:string;input_weight_kg:number;total_purchase_cost:number}>>([]);
+  const [processingForm,setProcessingForm] = useState({carcass_id:"",waste_loss_kg:"0",unallocated_kg:"0",notes:"",outputs:[{product_id:"",output_type:"saleable",weight_kg:""}]});
+  const [processingMessage,setProcessingMessage] = useState("");
+  const [savingProcessing,setSavingProcessing] = useState(false);
+
   const [purchaseForm,setPurchaseForm] = useState({department_id:"",supplier_id:"",reference_no:"",invoice_no:"",currency:"USD",exchange_rate:"1",product_id:"",quantity:"",unit_cost:"",batch_code:"",expiry_date:""});
   const [savingPurchase,setSavingPurchase] = useState(false);
   const [purchaseMessage,setPurchaseMessage] = useState("");
@@ -105,6 +110,18 @@ export default function ModulePage() {
       const deptRows=(departments.data||[]) as Array<{id:string;name:string;code?:string}>;
       setDepartments(deptRows);
       if (slug==="processing") {
+        const [{data:supplierRows},{data:carcassRows},{data:productRows}]=await Promise.all([
+          supabase.from("suppliers").select("id,name").eq("business_id",membership.business_id).eq("active",true).order("name"),
+          supabase.from("beef_carcasses").select("id,carcass_code,grade,input_weight_kg,total_purchase_cost").eq("business_id",membership.business_id).eq("status","received").order("received_at",{ascending:true}),
+          supabase.from("products").select("id,name,unit,department_id,expected_sale_price").eq("business_id",membership.business_id).eq("active",true).order("name")
+        ]);
+        setSuppliers((supplierRows||[]) as Array<{id:string;name:string}>);
+        setProcessingCarcasses((carcassRows||[]) as Array<{id:string;carcass_code:string;grade:string;input_weight_kg:number;total_purchase_cost:number}>);
+        setProducts((productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string;expected_sale_price?:number}>);
+        const redMeat=deptRows.find(d=>d.code==="red_meat")?.id || membership.department_id || deptRows[0]?.id || "";
+        setCarcassForm(v=>({...v,department_id:v.department_id||redMeat}));
+      }
+
         const {data:supplierRows}=await supabase.from("suppliers").select("id,name").eq("business_id",membership.business_id).eq("active",true).order("name");
         setSuppliers((supplierRows||[]) as Array<{id:string;name:string}>);
         const redMeat=deptRows.find(d=>d.code==="red_meat")?.id || membership.department_id || deptRows[0]?.id || "";
@@ -112,8 +129,8 @@ export default function ModulePage() {
       }
       if (slug==="sales" || slug==="cash-up") {
         if(slug==="sales") {
-          const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
-          setProducts((productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string}>);
+          const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id,expected_sale_price").eq("business_id",membership.business_id).eq("active",true).order("name");
+          setProducts((productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string;expected_sale_price?:number}>);
         }
         const [{data:shiftRows},{data:batchRows}]=await Promise.all([
           supabase.from("cashier_shifts").select("id,department_id,opening_cash").eq("business_id",membership.business_id).eq("cashier_id",user.id).eq("status","open").order("opened_at",{ascending:false}).limit(1),
@@ -282,6 +299,34 @@ export default function ModulePage() {
     setSavingPurchase(false);
   }
 
+  async function finalizeProcessing(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!businessId||!processingForm.carcass_id) return;
+    setSavingProcessing(true);setProcessingMessage("");
+    const outputs=processingForm.outputs.map(o=>({product_id:o.product_id,output_type:o.output_type,weight_kg:Number(o.weight_kg)}));
+    if(outputs.some(o=>!o.product_id||!Number.isFinite(o.weight_kg)||o.weight_kg<=0)){
+      setProcessingMessage("Each output line needs a product and a positive weight.");setSavingProcessing(false);return;
+    }
+    const {data,error:rpcError}=await supabase.rpc("finalize_beef_processing",{
+      p_business_id:businessId,p_carcass_id:processingForm.carcass_id,p_outputs:outputs,
+      p_waste_loss_kg:Number(processingForm.waste_loss_kg||0),p_unallocated_kg:Number(processingForm.unallocated_kg||0),
+      p_notes:processingForm.notes.trim()||null
+    });
+    if(rpcError) setProcessingMessage(rpcError.message);
+    else {
+      const result=data as {yield_percent:number;saleable_output_kg:number;usable_byproduct_kg:number};
+      setProcessingForm({carcass_id:"",waste_loss_kg:"0",unallocated_kg:"0",notes:"",outputs:[{product_id:"",output_type:"saleable",weight_kg:""}]});
+      const [{data:records},{data:carcassRows}]=await Promise.all([
+        supabase.from("beef_carcasses").select(section.columns.join(",")).eq("business_id",businessId).order("received_at",{ascending:false}).limit(100),
+        supabase.from("beef_carcasses").select("id,carcass_code,grade,input_weight_kg,total_purchase_cost").eq("business_id",businessId).eq("status","received").order("received_at",{ascending:true})
+      ]);
+      setRows((records||[]) as unknown as Row[]);
+      setProcessingCarcasses((carcassRows||[]) as Array<{id:string;carcass_code:string;grade:string;input_weight_kg:number;total_purchase_cost:number}>);
+      setProcessingMessage("Processing approved. Yield "+Number(result.yield_percent).toFixed(2)+"%; saleable "+Number(result.saleable_output_kg).toFixed(3)+" kg; usable by-products "+Number(result.usable_byproduct_kg).toFixed(3)+" kg.");
+    }
+    setSavingProcessing(false);
+  }
+
   async function receiveCarcass(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if(!businessId || !carcassForm.department_id || !carcassForm.carcass_code.trim()) return;
@@ -317,13 +362,13 @@ export default function ModulePage() {
       business_id:businessId, department_id:productForm.department_id,
       name:productForm.name.trim(), category:productForm.category.trim()||null,
       animal_type:productForm.animal_type.trim()||null, cut_name:productForm.cut_name.trim()||null,
-      grade:productForm.grade.trim()||null, unit:productForm.unit,
+      grade:productForm.grade.trim()||null, unit:productForm.unit, expected_sale_price:Number(productForm.expected_sale_price||0),
       barcode:productForm.barcode.trim()||null, track_expiry:productForm.track_expiry, active:true
     }).select("id,name,unit,department_id").single();
     if(insertError) setStockMessage(insertError.message);
     else {
       setProducts(v=>[...v,data as {id:string;name:string;unit:string;department_id:string}].sort((a,b)=>a.name.localeCompare(b.name)));
-      setProductForm(v=>({...v,name:"",category:"",animal_type:"",cut_name:"",grade:"",barcode:""}));
+      setProductForm(v=>({...v,name:"",category:"",animal_type:"",cut_name:"",grade:"",expected_sale_price:"0",barcode:""}));
       setStockMessage("Product added to the catalogue.");
     }
     setSavingProduct(false);
@@ -488,6 +533,28 @@ export default function ModulePage() {
         </form>
         {purchaseMessage && <p className={purchaseMessage.includes("recorded.")?"success":"notice"} style={{marginTop:12}}>{purchaseMessage}</p>}
       </section>}
+      {slug==="processing" && (role==="owner" || role==="manager") && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Process carcass and reconcile yield</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>Only a manager or owner can finalize processing. All output weights must reconcile to the carcass input. Usable bones and fat are recorded as by-products, not waste. Cost is allocated using each output's expected sales value.</p>
+        <form onSubmit={finalizeProcessing} style={{marginTop:14}}>
+          <div className="formgrid">
+            <label>Received carcass<select required value={processingForm.carcass_id} onChange={e=>setProcessingForm(v=>({...v,carcass_id:e.target.value}))}><option value="">Choose unprocessed carcass</option>{processingCarcasses.map(c=><option key={c.id} value={c.id}>{c.carcass_code} · {c.grade} · {c.input_weight_kg} kg</option>)}</select></label>
+            <label>Waste / processing loss (kg)<input type="number" min="0" step="0.001" value={processingForm.waste_loss_kg} onChange={e=>setProcessingForm(v=>({...v,waste_loss_kg:e.target.value}))}/></label>
+            <label>Unallocated discrepancy (kg)<input type="number" min="0" step="0.001" value={processingForm.unallocated_kg} onChange={e=>setProcessingForm(v=>({...v,unallocated_kg:e.target.value}))}/></label>
+            <label>Processing notes<input value={processingForm.notes} onChange={e=>setProcessingForm(v=>({...v,notes:e.target.value}))} placeholder="Cutting notes / variance explanation"/></label>
+          </div>
+          <h3 className="section-title" style={{marginTop:18}}>Saleable cuts and usable by-products</h3>
+          {processingForm.outputs.map((o,i)=><div key={i} className="formgrid" style={{marginTop:10}}>
+            <label>Product<select required value={o.product_id} onChange={e=>setProcessingForm(v=>({...v,outputs:v.outputs.map((line,j)=>j===i?{...line,product_id:e.target.value}:line)}))}><option value="">Choose kg product</option>{products.filter(p=>p.department_id===(departments.find(d=>d.code==="red_meat")?.id||carcassForm.department_id)&&p.unit==="kg").map(p=><option key={p.id} value={p.id}>{p.name} · expected {currency} {Number(p.expected_sale_price||0).toFixed(2)}/kg</option>)}</select></label>
+            <label>Output type<select value={o.output_type} onChange={e=>setProcessingForm(v=>({...v,outputs:v.outputs.map((line,j)=>j===i?{...line,output_type:e.target.value}:line)}))}><option value="saleable">Saleable cut</option><option value="byproduct">Usable by-product</option></select></label>
+            <label>Weight (kg)<input required type="number" min="0.001" step="0.001" value={o.weight_kg} onChange={e=>setProcessingForm(v=>({...v,outputs:v.outputs.map((line,j)=>j===i?{...line,weight_kg:e.target.value}:line)}))}/></label>
+            <button className="btn secondary" type="button" disabled={processingForm.outputs.length===1} onClick={()=>setProcessingForm(v=>({...v,outputs:v.outputs.filter((_,j)=>j!==i)}))}>Remove line</button>
+          </div>)}
+          <button className="btn secondary" type="button" style={{marginTop:12}} onClick={()=>setProcessingForm(v=>({...v,outputs:[...v.outputs,{product_id:"",output_type:"saleable",weight_kg:""}]}))}>Add output line</button>
+          <button className="btn" type="submit" disabled={savingProcessing||processingCarcasses.length===0} style={{marginTop:14,marginLeft:10}}>{savingProcessing?"Finalizing…":"Approve processing & create stock batches"}</button>
+        </form>
+        {processingMessage && <p className={processingMessage.startsWith("Processing approved")?"success":"notice"} style={{marginTop:12}}>{processingMessage}</p>}
+      </section>}
       {slug==="processing" && (role==="owner" || role==="manager" || role==="stock_clerk") && <section className="card" style={{marginBottom:16}}>
         <h2 className="section-title">Receive a beef carcass</h2>
         <p className="muted" style={{fontSize:12,marginTop:6}}>Record each carcass separately so its grade, supplier, weight and purchase cost remain traceable through cutting.</p>
@@ -515,6 +582,7 @@ export default function ModulePage() {
             <label>Animal type<input value={productForm.animal_type} onChange={e=>setProductForm(v=>({...v,animal_type:e.target.value}))} placeholder="Beef, goat, chicken..."/></label>
             <label>Cut / product type<input value={productForm.cut_name} onChange={e=>setProductForm(v=>({...v,cut_name:e.target.value}))} placeholder="Rump, brisket, wings..."/></label>
             <label>Grade<input value={productForm.grade} onChange={e=>setProductForm(v=>({...v,grade:e.target.value}))} placeholder="Commercial / Economy / Super"/></label>
+            <label>Expected selling price per unit<input required type="number" min="0" step="0.01" value={productForm.expected_sale_price} onChange={e=>setProductForm(v=>({...v,expected_sale_price:e.target.value}))} placeholder="0.00"/></label>
             <label>Stock unit<select value={productForm.unit} onChange={e=>setProductForm(v=>({...v,unit:e.target.value}))}><option value="kg">Kilograms (kg)</option><option value="piece">Pieces</option><option value="crate">Crates</option><option value="packet">Packets</option><option value="other">Other</option></select></label>
             <label>Barcode (optional)<input value={productForm.barcode} onChange={e=>setProductForm(v=>({...v,barcode:e.target.value}))} placeholder="Barcode"/></label>
             <label style={{display:"flex",alignItems:"center",gap:8}}><input type="checkbox" checked={productForm.track_expiry} onChange={e=>setProductForm(v=>({...v,track_expiry:e.target.checked}))}/> Track expiry dates</label>
