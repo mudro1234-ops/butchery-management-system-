@@ -64,6 +64,15 @@ export default function ModulePage() {
   const [purchaseForm,setPurchaseForm] = useState({department_id:"",supplier_id:"",reference_no:"",invoice_no:"",currency:"USD",exchange_rate:"1",product_id:"",quantity:"",unit_cost:"",batch_code:"",expiry_date:""});
   const [savingPurchase,setSavingPurchase] = useState(false);
   const [purchaseMessage,setPurchaseMessage] = useState("");
+  const [posBatches,setPosBatches] = useState<Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>>([]);
+  const [posForm,setPosForm] = useState({department_id:"",shift_id:"",batch_id:"",quantity:"",unit_price:"",discount:"0",currency:"USD",exchange_rate:"1",payment_method:"cash"});
+  const [posMessage,setPosMessage] = useState("");
+  const [openShift,setOpenShift] = useState<{id:string;department_id:string;opening_cash:number}|null>(null);
+  const [shiftForm,setShiftForm] = useState({department_id:"",opening_cash:"0",actual_cash:"",closing_notes:""});
+  const [shiftMessage,setShiftMessage] = useState("");
+  const [savingSale,setSavingSale] = useState(false);
+  const [savingShift,setSavingShift] = useState(false);
+
 
 
 
@@ -95,6 +104,18 @@ export default function ModulePage() {
         const redMeat=deptRows.find(d=>d.code==="red_meat")?.id || membership.department_id || deptRows[0]?.id || "";
         setCarcassForm(v=>({...v,department_id:v.department_id||redMeat}));
       }
+      if (slug==="sales" || slug==="cash-up") {
+        const [{data:shiftRows},{data:batchRows}]=await Promise.all([
+          supabase.from("cashier_shifts").select("id,department_id,opening_cash").eq("business_id",membership.business_id).eq("cashier_id",user.id).eq("status","open").order("opened_at",{ascending:false}).limit(1),
+          supabase.from("stock_batches").select("id,batch_code,product_id,quantity_on_hand,unit,unit_cost,department_id").eq("business_id",membership.business_id).gt("quantity_on_hand",0).order("received_at",{ascending:true})
+        ]);
+        const shift=(shiftRows||[])[0] as {id:string;department_id:string;opening_cash:number}|undefined;
+        if(shift) setOpenShift(shift);
+        const defaultDepartment=membership.department_id || deptRows[0]?.id || "";
+        setShiftForm(v=>({...v,department_id:v.department_id||defaultDepartment}));
+        setPosForm(v=>({...v,department_id:v.department_id||defaultDepartment,shift_id:v.shift_id||(shift?.id||"")}));
+        setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
+      }
       if (slug==="purchases") {
         const [{data:productRows},{data:supplierRows}]=await Promise.all([
           supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name"),
@@ -121,6 +142,70 @@ export default function ModulePage() {
   },[router,slug]);
 
 
+
+  async function openCashierShift(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!businessId||!shiftForm.department_id) return;
+    setSavingShift(true);setShiftMessage("");
+    const {data:{user}}=await supabase.auth.getUser();
+    const amount=Number(shiftForm.opening_cash);
+    if(!Number.isFinite(amount)||amount<0){setShiftMessage("Opening float cannot be negative.");setSavingShift(false);return;}
+    const {data,error:insertError}=await supabase.from("cashier_shifts").insert({
+      business_id:businessId,department_id:shiftForm.department_id,cashier_id:user?.id,
+      opening_cash:amount,status:"open"
+    }).select("id,department_id,opening_cash").single();
+    if(insertError) setShiftMessage(insertError.message);
+    else {setOpenShift(data);setPosForm(v=>({...v,department_id:data.department_id,shift_id:data.id}));setShiftMessage("Cashier shift opened.");}
+    setSavingShift(false);
+  }
+
+  async function closeCashierShift(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!openShift) return;
+    setSavingShift(true);setShiftMessage("");
+    const actual=Number(shiftForm.actual_cash);
+    if(!Number.isFinite(actual)||actual<0){setShiftMessage("Enter a valid counted cash amount.");setSavingShift(false);return;}
+    const {data:transactions,error:txError}=await supabase.from("cash_transactions").select("transaction_type,amount,payment_method").eq("shift_id",openShift.id);
+    if(txError){setShiftMessage(txError.message);setSavingShift(false);return;}
+    const cashRows=transactions||[];
+    const cashSales=cashRows.filter(t=>t.payment_method==="cash"&&t.transaction_type==="sale").reduce((n,t)=>n+Number(t.amount),0);
+    const cashOut=cashRows.filter(t=>t.payment_method==="cash"&&["expense","refund","cash_out"].includes(t.transaction_type)).reduce((n,t)=>n+Number(t.amount),0);
+    const expected=Number(openShift.opening_cash)+cashSales-cashOut;
+    const {error:updateError}=await supabase.from("cashier_shifts").update({
+      expected_cash:expected,actual_cash:actual,variance:Number((actual-expected).toFixed(2)),
+      status:"closed",closed_at:new Date().toISOString(),closing_notes:shiftForm.closing_notes.trim()||null
+    }).eq("id",openShift.id);
+    if(updateError) setShiftMessage(updateError.message);
+    else {setOpenShift(null);setShiftForm(v=>({...v,actual_cash:"",closing_notes:""}));setShiftMessage("Shift closed and cash variance recorded.");}
+    setSavingShift(false);
+  }
+
+  async function submitSale(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!businessId||!posForm.department_id||!posForm.shift_id||!posForm.batch_id) return;
+    setSavingSale(true);setPosMessage("");
+    const batch=posBatches.find(b=>b.id===posForm.batch_id);
+    const quantity=Number(posForm.quantity),price=Number(posForm.unit_price),discount=Number(posForm.discount),rate=Number(posForm.exchange_rate);
+    if(!batch||!Number.isFinite(quantity)||quantity<=0||quantity>Number(batch.quantity_on_hand)||!Number.isFinite(price)||price<0||!Number.isFinite(discount)||discount<0||!Number.isFinite(rate)||rate<=0) {
+      setPosMessage("Check the batch, available quantity, selling price, discount and exchange rate.");setSavingSale(false);return;
+    }
+    const {data,error:rpcError}=await supabase.rpc("post_sale",{
+      p_business_id:businessId,p_department_id:posForm.department_id,p_shift_id:posForm.shift_id,
+      p_currency:posForm.currency,p_exchange_rate:rate,p_discount:discount,p_payment_method:posForm.payment_method,
+      p_lines:[{batch_id:batch.id,quantity,unit_price:price}]
+    });
+    if(rpcError) setPosMessage(rpcError.message);
+    else {
+      const result=data as {receipt_no:string;total:number};
+      setPosForm(v=>({...v,batch_id:"",quantity:"",unit_price:"",discount:"0"}));
+      const {data:batchRows}=await supabase.from("stock_batches").select("id,batch_code,product_id,quantity_on_hand,unit,unit_cost,department_id").eq("business_id",businessId).gt("quantity_on_hand",0).order("received_at",{ascending:true});
+      setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
+      const {data:records}=await supabase.from("sales").select(section.columns.join(",")).eq("business_id",businessId).order("sold_at",{ascending:false}).limit(100);
+      setRows((records||[]) as unknown as Row[]);
+      setPosMessage("Sale posted: "+result.receipt_no+". Total "+posForm.currency+" "+Number(result.total).toFixed(2)+".");
+    }
+    setSavingSale(false);
+  }
 
   async function recordPurchase(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -275,6 +360,37 @@ export default function ModulePage() {
       <div className="grid" style={{gridTemplateColumns:"repeat(3,minmax(0,1fr))"}}>{slug==="sales"||slug==="reports"?<><article className="card"><div className="metric-label">Sales in loaded records</div><div className="metric">{currency} {totals.sales.toFixed(2)}</div></article><article className="card"><div className="metric-label">Cost of goods sold</div><div className="metric">{currency} {totals.cogs.toFixed(2)}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:slug==="expenses"?<><article className="card"><div className="metric-label">Loaded expenses</div><div className="metric">{currency} {totals.expenses.toFixed(2)}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:<><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Workspace</div><div className="metric" style={{fontSize:18}}>{role?.replace("_"," ")}</div></article></>}</div>
 
 
+      {slug==="cash-up" && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Cashier shift control</h2>
+        {openShift ? <form onSubmit={closeCashierShift} className="formgrid" style={{marginTop:14}}>
+          <div className="notice">Open shift · {departments.find(d=>d.id===openShift.department_id)?.name||"Department"} · Opening float {currency} {Number(openShift.opening_cash).toFixed(2)}</div>
+          <label>Counted closing cash<input required type="number" min="0" step="0.01" value={shiftForm.actual_cash} onChange={e=>setShiftForm(v=>({...v,actual_cash:e.target.value}))}/></label>
+          <label>Closing notes<input value={shiftForm.closing_notes} onChange={e=>setShiftForm(v=>({...v,closing_notes:e.target.value}))} placeholder="Explain any cash discrepancy"/></label>
+          <button className="btn" type="submit" disabled={savingShift}>{savingShift?"Closing shift…":"Close shift & reconcile"}</button>
+        </form> : <form onSubmit={openCashierShift} className="formgrid" style={{marginTop:14}}>
+          <label>Department<select required value={shiftForm.department_id} onChange={e=>setShiftForm(v=>({...v,department_id:e.target.value}))}><option value="">Choose department</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+          <label>Opening cash float<input required type="number" min="0" step="0.01" value={shiftForm.opening_cash} onChange={e=>setShiftForm(v=>({...v,opening_cash:e.target.value}))}/></label>
+          <button className="btn" type="submit" disabled={savingShift}>{savingShift?"Opening shift…":"Open cashier shift"}</button>
+        </form>}
+        {shiftMessage && <p className={shiftMessage.includes("opened")||shiftMessage.includes("closed")?"success":"notice"} style={{marginTop:12}}>{shiftMessage}</p>}
+      </section>}
+      {slug==="sales" && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Point of sale</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>Select a live stock batch. Posting a sale checks available stock, records cost of goods, creates the payment transaction and deducts stock in one database transaction.</p>
+        {!openShift ? <div className="notice" style={{marginTop:12}}>Open a cashier shift in Shifts & Cash-up before posting sales.</div> : <form onSubmit={submitSale} className="formgrid" style={{marginTop:14}}>
+          <label>Department<select required value={posForm.department_id} onChange={e=>setPosForm(v=>({...v,department_id:e.target.value,batch_id:""}))}><option value="">Choose department</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+          <label>Stock batch<select required value={posForm.batch_id} onChange={e=>setPosForm(v=>({...v,batch_id:e.target.value}))}><option value="">Choose available batch</option>{posBatches.filter(b=>b.department_id===posForm.department_id).map(b=><option key={b.id} value={b.id}>{b.batch_code} · {products.find(p=>p.id===b.product_id)?.name||b.product_id} · {b.quantity_on_hand} {b.unit}</option>)}</select></label>
+          <label>Quantity<input required type="number" min="0.001" step="0.001" value={posForm.quantity} onChange={e=>setPosForm(v=>({...v,quantity:e.target.value}))}/></label>
+          <label>Selling price per unit<input required type="number" min="0" step="0.01" value={posForm.unit_price} onChange={e=>setPosForm(v=>({...v,unit_price:e.target.value}))}/></label>
+          <label>Discount<input type="number" min="0" step="0.01" value={posForm.discount} onChange={e=>setPosForm(v=>({...v,discount:e.target.value}))}/></label>
+          <label>Currency<select value={posForm.currency} onChange={e=>setPosForm(v=>({...v,currency:e.target.value}))}><option>USD</option><option>ZiG</option></select></label>
+          <label>Exchange rate to base currency<input required type="number" min="0.000001" step="0.000001" value={posForm.exchange_rate} onChange={e=>setPosForm(v=>({...v,exchange_rate:e.target.value}))}/></label>
+          <label>Payment method<select value={posForm.payment_method} onChange={e=>setPosForm(v=>({...v,payment_method:e.target.value}))}><option value="cash">Cash</option><option value="mobile_money">Mobile money</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="other">Other</option></select></label>
+          <div className="notice">Line total before discount: {posForm.currency} {(Number(posForm.quantity||0)*Number(posForm.unit_price||0)).toFixed(2)}</div>
+          <button className="btn" type="submit" disabled={savingSale}>{savingSale?"Posting sale…":"Complete sale"}</button>
+        </form>}
+        {posMessage && <p className={posMessage.startsWith("Sale posted")?"success":"notice"} style={{marginTop:12}}>{posMessage}</p>}
+      </section>}
       {slug==="purchases" && (role==="owner" || role==="manager" || role==="stock_clerk") && <section className="card" style={{marginBottom:16}}>
         <h2 className="section-title">Record supplier purchase and delivery</h2>
         <p className="muted" style={{fontSize:12,marginTop:6}}>This records the purchase, line item, incoming stock batch and stock movement atomically. Supplier payments are recorded separately and do not add the purchase cost again.</p>
