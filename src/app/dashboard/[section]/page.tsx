@@ -72,6 +72,12 @@ export default function ModulePage() {
   const [shiftMessage,setShiftMessage] = useState("");
   const [savingSale,setSavingSale] = useState(false);
   const [savingShift,setSavingShift] = useState(false);
+  const [expenseForm,setExpenseForm] = useState({department_id:"",category:"",description:"",amount:"",currency:"USD",exchange_rate:"1",payment_method:"cash",receipt_reference:""});
+  const [expenseMessage,setExpenseMessage] = useState("");
+  const [supplierPayForm,setSupplierPayForm] = useState({supplier_id:"",purchase_id:"",amount:"",currency:"USD",payment_method:"cash",reference_no:""});
+  const [supplierPayMessage,setSupplierPayMessage] = useState("");
+  const [savingFinance,setSavingFinance] = useState(false);
+
 
 
 
@@ -120,7 +126,7 @@ export default function ModulePage() {
         setPosForm(v=>({...v,department_id:v.department_id||defaultDepartment,shift_id:v.shift_id||(shift?.id||"")}));
         setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
       }
-      if (slug==="purchases") {
+      if (slug==="purchases" || slug==="expenses") {
         const [{data:productRows},{data:supplierRows}]=await Promise.all([
           supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name"),
           supabase.from("suppliers").select("id,name").eq("business_id",membership.business_id).eq("active",true).order("name")
@@ -146,6 +152,44 @@ export default function ModulePage() {
   },[router,slug]);
 
 
+
+  async function saveExpense(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingFinance(true);setExpenseMessage("");
+    const {data:{user}}=await supabase.auth.getUser();
+    const amount=Number(expenseForm.amount),rate=Number(expenseForm.exchange_rate);
+    if(!Number.isFinite(amount)||amount<=0||!Number.isFinite(rate)||rate<=0){setExpenseMessage("Enter a positive amount and exchange rate.");setSavingFinance(false);return;}
+    const {error:insertError}=await supabase.from("expenses").insert({
+      business_id:businessId,department_id:expenseForm.department_id||null,
+      category:expenseForm.category.trim(),description:expenseForm.description.trim(),
+      amount,currency:expenseForm.currency,exchange_rate:rate,payment_method:expenseForm.payment_method,
+      receipt_reference:expenseForm.receipt_reference.trim()||null,recorded_by:user?.id||null
+    });
+    if(insertError) setExpenseMessage(insertError.message);
+    else {
+      setExpenseForm(v=>({...v,category:"",description:"",amount:"",receipt_reference:""}));
+      const {data}=await supabase.from("expenses").select(section.columns.join(",")).eq("business_id",businessId).order("incurred_at",{ascending:false}).limit(100);
+      setRows((data||[]) as unknown as Row[]);setExpenseMessage("Expense recorded.");
+    }
+    setSavingFinance(false);
+  }
+
+  async function saveSupplierPayment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingFinance(true);setSupplierPayMessage("");
+    const {data:{user}}=await supabase.auth.getUser();
+    const amount=Number(supplierPayForm.amount);
+    if(!supplierPayForm.supplier_id||!Number.isFinite(amount)||amount<=0){setSupplierPayMessage("Choose a supplier and enter a positive payment amount.");setSavingFinance(false);return;}
+    const {error:insertError}=await supabase.from("supplier_payments").insert({
+      business_id:businessId,supplier_id:supplierPayForm.supplier_id,
+      purchase_id:supplierPayForm.purchase_id||null,amount,currency:supplierPayForm.currency,
+      payment_method:supplierPayForm.payment_method,reference_no:supplierPayForm.reference_no.trim()||null,
+      recorded_by:user?.id||null
+    });
+    if(insertError) setSupplierPayMessage(insertError.message);
+    else {setSupplierPayForm(v=>({...v,purchase_id:"",amount:"",reference_no:""}));setSupplierPayMessage("Supplier payment recorded separately from purchase cost.");}
+    setSavingFinance(false);
+  }
 
   async function openCashierShift(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -364,6 +408,35 @@ export default function ModulePage() {
       <div className="grid" style={{gridTemplateColumns:"repeat(3,minmax(0,1fr))"}}>{slug==="sales"||slug==="reports"?<><article className="card"><div className="metric-label">Sales in loaded records</div><div className="metric">{currency} {totals.sales.toFixed(2)}</div></article><article className="card"><div className="metric-label">Cost of goods sold</div><div className="metric">{currency} {totals.cogs.toFixed(2)}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:slug==="expenses"?<><article className="card"><div className="metric-label">Loaded expenses</div><div className="metric">{currency} {totals.expenses.toFixed(2)}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:<><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Workspace</div><div className="metric" style={{fontSize:18}}>{role?.replace("_"," ")}</div></article></>}</div>
 
 
+      {slug==="expenses" && (role==="owner" || role==="manager") && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Record operating expense</h2>
+        <form onSubmit={saveExpense} className="formgrid" style={{marginTop:14}}>
+          <label>Department<select value={expenseForm.department_id} onChange={e=>setExpenseForm(v=>({...v,department_id:e.target.value}))}><option value="">Business-wide expense</option>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+          <label>Expense category<input required value={expenseForm.category} onChange={e=>setExpenseForm(v=>({...v,category:e.target.value}))} placeholder="Rent, utilities, transport..."/></label>
+          <label>Description<input required value={expenseForm.description} onChange={e=>setExpenseForm(v=>({...v,description:e.target.value}))} placeholder="What was paid for?"/></label>
+          <label>Amount<input required type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm(v=>({...v,amount:e.target.value}))}/></label>
+          <label>Currency<select value={expenseForm.currency} onChange={e=>setExpenseForm(v=>({...v,currency:e.target.value}))}><option>USD</option><option>ZiG</option></select></label>
+          <label>Exchange rate to base currency<input required type="number" min="0.000001" step="0.000001" value={expenseForm.exchange_rate} onChange={e=>setExpenseForm(v=>({...v,exchange_rate:e.target.value}))}/></label>
+          <label>Payment method<select value={expenseForm.payment_method} onChange={e=>setExpenseForm(v=>({...v,payment_method:e.target.value}))}><option value="cash">Cash</option><option value="mobile_money">Mobile money</option><option value="bank">Bank</option><option value="card">Card</option><option value="other">Other</option></select></label>
+          <label>Receipt reference<input value={expenseForm.receipt_reference} onChange={e=>setExpenseForm(v=>({...v,receipt_reference:e.target.value}))}/></label>
+          <button className="btn" type="submit" disabled={savingFinance}>{savingFinance?"Saving…":"Record expense"}</button>
+        </form>
+        {expenseMessage && <p className={expenseMessage==="Expense recorded."?"success":"notice"} style={{marginTop:12}}>{expenseMessage}</p>}
+      </section>}
+      {slug==="purchases" && (role==="owner" || role==="manager") && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Record supplier payment</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>Payments reduce supplier balances; they do not create another stock cost or expense.</p>
+        <form onSubmit={saveSupplierPayment} className="formgrid" style={{marginTop:14}}>
+          <label>Supplier<select required value={supplierPayForm.supplier_id} onChange={e=>setSupplierPayForm(v=>({...v,supplier_id:e.target.value}))}><option value="">Choose supplier</option>{suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+          <label>Purchase ID (optional)<input value={supplierPayForm.purchase_id} onChange={e=>setSupplierPayForm(v=>({...v,purchase_id:e.target.value}))} placeholder="Link to a purchase UUID"/></label>
+          <label>Payment amount<input required type="number" min="0.01" step="0.01" value={supplierPayForm.amount} onChange={e=>setSupplierPayForm(v=>({...v,amount:e.target.value}))}/></label>
+          <label>Currency<select value={supplierPayForm.currency} onChange={e=>setSupplierPayForm(v=>({...v,currency:e.target.value}))}><option>USD</option><option>ZiG</option></select></label>
+          <label>Payment method<select value={supplierPayForm.payment_method} onChange={e=>setSupplierPayForm(v=>({...v,payment_method:e.target.value}))}><option value="cash">Cash</option><option value="mobile_money">Mobile money</option><option value="bank">Bank</option><option value="card">Card</option><option value="other">Other</option></select></label>
+          <label>Payment reference<input value={supplierPayForm.reference_no} onChange={e=>setSupplierPayForm(v=>({...v,reference_no:e.target.value}))}/></label>
+          <button className="btn" type="submit" disabled={savingFinance}>{savingFinance?"Saving…":"Record supplier payment"}</button>
+        </form>
+        {supplierPayMessage && <p className={supplierPayMessage.includes("recorded")?"success":"notice"} style={{marginTop:12}}>{supplierPayMessage}</p>}
+      </section>}
       {slug==="cash-up" && <section className="card" style={{marginBottom:16}}>
         <h2 className="section-title">Cashier shift control</h2>
         {openShift ? <form onSubmit={closeCashierShift} className="formgrid" style={{marginTop:14}}>
