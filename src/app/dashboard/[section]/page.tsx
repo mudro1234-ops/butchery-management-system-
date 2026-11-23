@@ -77,6 +77,8 @@ export default function ModulePage() {
   const [posBatches,setPosBatches] = useState<Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>>([]);
   const [posForm,setPosForm] = useState({department_id:"",shift_id:"",batch_id:"",quantity:"",unit_price:"",discount:"0",currency:"USD",exchange_rate:"1",payment_method:"cash"});
   const [posMessage,setPosMessage] = useState("");
+  const [posLines,setPosLines] = useState<Array<{batch_id:string;batch_code:string;product_id:string;product_name:string;quantity:number;unit_price:number;unit:string}>>([]);
+
   const [openShift,setOpenShift] = useState<{id:string;department_id:string;opening_cash:number}|null>(null);
   const [shiftForm,setShiftForm] = useState({department_id:"",opening_cash:"0",actual_cash:"",closing_notes:""});
   const [shiftMessage,setShiftMessage] = useState("");
@@ -280,27 +282,41 @@ export default function ModulePage() {
     setSavingShift(false);
   }
 
+  function addPosLine() {
+    const batch=posBatches.find(b=>b.id===posForm.batch_id);
+    const quantity=Number(posForm.quantity),price=Number(posForm.unit_price);
+    if(!batch||!Number.isFinite(quantity)||quantity<=0||!Number.isFinite(price)||price<0) {
+      setPosMessage("Choose a batch and enter a valid quantity and selling price.");return;
+    }
+    const existing=posLines.find(line=>line.batch_id===batch.id);
+    const combined=quantity+(existing?.quantity||0);
+    if(combined>Number(batch.quantity_on_hand)){setPosMessage("The cart quantity exceeds available batch stock.");return;}
+    const product=products.find(p=>p.id===batch.product_id);
+    if(existing) setPosLines(lines=>lines.map(line=>line.batch_id===batch.id?{...line,quantity:combined}:line));
+    else setPosLines(lines=>[...lines,{batch_id:batch.id,batch_code:batch.batch_code,product_id:batch.product_id,product_name:product?.name||batch.product_id,quantity,unit_price:price,unit:batch.unit}]);
+    setPosForm(v=>({...v,batch_id:"",quantity:"",unit_price:""}));setPosMessage("");
+  }
+
   async function submitSale(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if(!businessId||!posForm.department_id||!posForm.shift_id||!posForm.batch_id) return;
+    if(!businessId||!posForm.department_id||!posForm.shift_id||posLines.length===0){setPosMessage("Add at least one item to the cart before completing the sale.");return;}
     setSavingSale(true);setPosMessage("");
-    const batch=posBatches.find(b=>b.id===posForm.batch_id);
-    const quantity=Number(posForm.quantity),price=Number(posForm.unit_price),discount=Number(posForm.discount),rate=Number(posForm.exchange_rate);
-    if(!batch||!Number.isFinite(quantity)||quantity<=0||quantity>Number(batch.quantity_on_hand)||!Number.isFinite(price)||price<0||!Number.isFinite(discount)||discount<0||!Number.isFinite(rate)||rate<=0) {
-      setPosMessage("Check the batch, available quantity, selling price, discount and exchange rate.");setSavingSale(false);return;
-    }
+    const discount=Number(posForm.discount),rate=Number(posForm.exchange_rate);
+    if(!Number.isFinite(discount)||discount<0||!Number.isFinite(rate)||rate<=0){setPosMessage("Check the discount and exchange rate.");setSavingSale(false);return;}
     const {data,error:rpcError}=await supabase.rpc("post_sale",{
       p_business_id:businessId,p_department_id:posForm.department_id,p_shift_id:posForm.shift_id,
       p_currency:posForm.currency,p_exchange_rate:rate,p_discount:discount,p_payment_method:posForm.payment_method,
-      p_lines:[{batch_id:batch.id,quantity,unit_price:price}]
+      p_lines:posLines.map(line=>({batch_id:line.batch_id,quantity:line.quantity,unit_price:line.unit_price}))
     });
     if(rpcError) setPosMessage(rpcError.message);
     else {
       const result=data as {receipt_no:string;total:number};
-      setPosForm(v=>({...v,batch_id:"",quantity:"",unit_price:"",discount:"0"}));
-      const {data:batchRows}=await supabase.from("stock_batches").select("id,batch_code,product_id,quantity_on_hand,unit,unit_cost,department_id").eq("business_id",businessId).gt("quantity_on_hand",0).order("received_at",{ascending:true});
+      setPosLines([]);setPosForm(v=>({...v,batch_id:"",quantity:"",unit_price:"",discount:"0"}));
+      const [{data:batchRows},{data:records}]=await Promise.all([
+        supabase.from("stock_batches").select("id,batch_code,product_id,quantity_on_hand,unit,unit_cost,department_id").eq("business_id",businessId).gt("quantity_on_hand",0).order("received_at",{ascending:true}),
+        supabase.from("sales").select(section.columns.join(",")).eq("business_id",businessId).order("sold_at",{ascending:false}).limit(100)
+      ]);
       setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
-      const {data:records}=await supabase.from("sales").select(section.columns.join(",")).eq("business_id",businessId).order("sold_at",{ascending:false}).limit(100);
       setRows((records||[]) as unknown as Row[]);
       setPosMessage("Sale posted: "+result.receipt_no+". Total "+posForm.currency+" "+Number(result.total).toFixed(2)+".");
     }
@@ -609,7 +625,16 @@ export default function ModulePage() {
           <label>Exchange rate to base currency<input required type="number" min="0.000001" step="0.000001" value={posForm.exchange_rate} onChange={e=>setPosForm(v=>({...v,exchange_rate:e.target.value}))}/></label>
           <label>Payment method<select value={posForm.payment_method} onChange={e=>setPosForm(v=>({...v,payment_method:e.target.value}))}><option value="cash">Cash</option><option value="mobile_money">Mobile money</option><option value="bank">Bank transfer</option><option value="card">Card</option><option value="other">Other</option></select></label>
           <div className="notice">Line total before discount: {posForm.currency} {(Number(posForm.quantity||0)*Number(posForm.unit_price||0)).toFixed(2)}</div>
-          <button className="btn" type="submit" disabled={savingSale}>{savingSale?"Posting sale…":"Complete sale"}</button>
+          <button className="btn secondary" type="button" onClick={addPosLine}>Add item to cart</button>
+          {posLines.length>0 && <div style={{gridColumn:"1 / -1",border:"1px solid var(--line)",borderRadius:10,padding:12}}>
+            <strong style={{fontSize:13}}>Current sale · {posLines.length} line(s)</strong>
+            {posLines.map((line,i)=><div key={line.batch_id} className="row" style={{padding:"8px 0",borderBottom:"1px solid var(--line)",fontSize:12}}>
+              <span>{line.product_name} · {line.quantity} {line.unit} × {posForm.currency} {line.unit_price.toFixed(2)}</span>
+              <span>{posForm.currency} {(line.quantity*line.unit_price).toFixed(2)} <button type="button" className="btn secondary" style={{marginLeft:8}} onClick={()=>setPosLines(lines=>lines.filter((_,j)=>j!==i))}>Remove</button></span>
+            </div>)}
+            <div style={{textAlign:"right",fontWeight:800,marginTop:10}}>Subtotal: {posForm.currency} {posLines.reduce((sum,line)=>sum+line.quantity*line.unit_price,0).toFixed(2)}</div>
+          </div>}
+          <button className="btn" type="submit" disabled={savingSale||posLines.length===0}>{savingSale?"Posting sale…":"Complete sale"}</button>
         </form>}
         {posMessage && <p className={posMessage.startsWith("Sale posted")?"success":"notice"} style={{marginTop:12}}>{posMessage}</p>}
       </section>}
