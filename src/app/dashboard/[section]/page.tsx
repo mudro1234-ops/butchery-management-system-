@@ -47,6 +47,10 @@ export default function ModulePage() {
   const [error,setError] = useState("");
   const [currency,setCurrency] = useState("USD");
   const [departmentCount,setDepartmentCount] = useState(0);
+  const [supplierForm,setSupplierForm] = useState({name:"",contact_name:"",phone:"",email:"",address:"",notes:""});
+  const [savingSupplier,setSavingSupplier] = useState(false);
+  const [supplierMessage,setSupplierMessage] = useState("");
+
 
   useEffect(() => {
     let alive = true;
@@ -71,6 +75,32 @@ export default function ModulePage() {
     })();
     return () => { alive = false; };
   },[router,slug]);
+
+
+  async function createSupplier(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!businessId || !supplierForm.name.trim()) return;
+    setSavingSupplier(true); setSupplierMessage("");
+    const { error: insertError } = await supabase.from("suppliers").insert({
+      business_id: businessId,
+      name: supplierForm.name.trim(),
+      contact_name: supplierForm.contact_name.trim() || null,
+      phone: supplierForm.phone.trim() || null,
+      email: supplierForm.email.trim() || null,
+      address: supplierForm.address.trim() || null,
+      notes: supplierForm.notes.trim() || null,
+      active: true
+    });
+    if (insertError) {
+      setSupplierMessage(insertError.message);
+    } else {
+      setSupplierForm({name:"",contact_name:"",phone:"",email:"",address:"",notes:""});
+      const {data,error:reloadError}=await supabase.from("suppliers").select(section.columns.join(",")).eq("business_id",businessId).order("created_at",{ascending:false}).limit(100);
+      if (reloadError) setSupplierMessage("Supplier saved, but the register could not refresh: "+reloadError.message);
+      else { setRows((data||[]) as unknown as Row[]); setSupplierMessage("Supplier added successfully."); }
+    }
+    setSavingSupplier(false);
+  }
 
   const totals = useMemo(() => {
     const sum = (key:string) => rows.reduce((n,r)=>n+Number(r[key]||0),0);
@@ -103,6 +133,21 @@ export default function ModulePage() {
       <section className="content"><div className="eyebrow">{section.eyebrow}</div><div className="row"><div><h1 className="heading">{section.title}</h1><p className="sub">{section.description}</p></div><span className="pill">{businessName}</span></div>
       {error && <p className="error">{error}</p>}
       <div className="grid" style={{gridTemplateColumns:"repeat(3,minmax(0,1fr))"}}>{slug==="sales"||slug==="reports"?<><article className="card"><div className="metric-label">Sales in loaded records</div><div className="metric">{currency} {totals.sales.toFixed(2)}</div></article><article className="card"><div className="metric-label">Cost of goods sold</div><div className="metric">{currency} {totals.cogs.toFixed(2)}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:slug==="expenses"?<><article className="card"><div className="metric-label">Loaded expenses</div><div className="metric">{currency} {totals.expenses.toFixed(2)}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:<><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Workspace</div><div className="metric" style={{fontSize:18}}>{role?.replace("_"," ")}</div></article></>}</div>
+
+      {slug==="suppliers" && (role==="owner" || role==="manager") && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Add supplier</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>Save a supplier once, then select them when recording deliveries and purchases.</p>
+        <form onSubmit={createSupplier} className="formgrid" style={{marginTop:14}}>
+          <label>Supplier / company name<input required value={supplierForm.name} onChange={e=>setSupplierForm(v=>({...v,name:e.target.value}))} placeholder="e.g. Mbare Meat Suppliers"/></label>
+          <label>Contact person<input value={supplierForm.contact_name} onChange={e=>setSupplierForm(v=>({...v,contact_name:e.target.value}))} placeholder="Contact name"/></label>
+          <label>Phone<input value={supplierForm.phone} onChange={e=>setSupplierForm(v=>({...v,phone:e.target.value}))} placeholder="+263..."/></label>
+          <label>Email<input type="email" value={supplierForm.email} onChange={e=>setSupplierForm(v=>({...v,email:e.target.value}))} placeholder="supplier@example.com"/></label>
+          <label>Address<input value={supplierForm.address} onChange={e=>setSupplierForm(v=>({...v,address:e.target.value}))} placeholder="Town / address"/></label>
+          <label>Notes<input value={supplierForm.notes} onChange={e=>setSupplierForm(v=>({...v,notes:e.target.value}))} placeholder="Products supplied, payment terms..."/></label>
+          <button className="btn" type="submit" disabled={savingSupplier}>{savingSupplier?"Saving supplier…":"Save supplier"}</button>
+        </form>
+        {supplierMessage && <p className={supplierMessage.includes("successfully")?"success":"notice"} style={{marginTop:12}}>{supplierMessage}</p>}
+      </section>}
       <section className="card"><div className="row"><h2 className="section-title">{section.title} register</h2><span className="muted" style={{fontSize:11}}>Latest 100 records · live database</span></div>
       {rows.length===0?<div className="notice" style={{marginTop:16}}>No records are available yet. Once authorized transactions are entered, they will appear here. This page does not create sample data.</div>:<div style={{overflowX:"auto",marginTop:14}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr>{section.columns.map(c=><th key={c} style={{textAlign:"left",padding:11,whiteSpace:"nowrap",background:"#f7faf7"}}>{section.labels[c]||c}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={String(r.id||i)} style={{borderTop:"1px solid var(--line)"}}>{section.columns.map(c=><td key={c} style={{padding:11,whiteSpace:"nowrap",maxWidth:240,overflow:"hidden",textOverflow:"ellipsis"}}>{display(r[c])}</td>)}</tr>)}</tbody></table></div>}
       </section>
