@@ -88,6 +88,10 @@ export default function ModulePage() {
   const [supplierPayMessage,setSupplierPayMessage] = useState("");
   const [savingFinance,setSavingFinance] = useState(false);
   const [reportExpenses,setReportExpenses] = useState<Array<{amount:number;currency:string;category:string;incurred_at:string}>>([]);
+  const [voidableSales,setVoidableSales] = useState<Array<{id:string;receipt_no:string;status:string;total:number;currency:string}>>([]);
+  const [voidForm,setVoidForm] = useState({sale_id:"",reason:""});
+  const [voidMessage,setVoidMessage] = useState("");
+
 
 
 
@@ -145,6 +149,10 @@ export default function ModulePage() {
         setPosForm(v=>({...v,department_id:v.department_id||defaultDepartment,shift_id:v.shift_id||(shift?.id||"")}));
         setPosBatches((batchRows||[]) as Array<{id:string;batch_code:string;product_id:string;quantity_on_hand:number;unit:string;unit_cost:number;department_id:string}>);
       }
+      if (slug==="sales" && (membership.role==="owner" || membership.role==="manager")) {
+        const {data:saleRows}=await supabase.from("sales").select("id,receipt_no,status,total,currency").eq("business_id",membership.business_id).eq("status","posted").order("sold_at",{ascending:false}).limit(100);
+        setVoidableSales((saleRows||[]) as Array<{id:string;receipt_no:string;status:string;total:number;currency:string}>);
+      }
       if (slug==="reports") {
         const {data:expenseRows}=await supabase.from("expenses").select("amount,currency,category,incurred_at").eq("business_id",membership.business_id).order("incurred_at",{ascending:false}).limit(1000);
         setReportExpenses((expenseRows||[]) as Array<{amount:number;currency:string;category:string;incurred_at:string}>);
@@ -185,6 +193,24 @@ export default function ModulePage() {
   },[router,slug]);
 
 
+
+  async function voidSale(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!voidForm.sale_id||voidForm.reason.trim().length<5){setVoidMessage("Choose a sale and provide a cancellation reason.");return;}
+    setVoidMessage("");
+    const {error:voidError}=await supabase.rpc("void_sale",{p_sale_id:voidForm.sale_id,p_reason:voidForm.reason.trim()});
+    if(voidError) setVoidMessage(voidError.message);
+    else {
+      setVoidForm({sale_id:"",reason:""});
+      const [{data:records},{data:saleRows}]=await Promise.all([
+        supabase.from("sales").select(section.columns.join(",")).eq("business_id",businessId).order("sold_at",{ascending:false}).limit(100),
+        supabase.from("sales").select("id,receipt_no,status,total,currency").eq("business_id",businessId).eq("status","posted").order("sold_at",{ascending:false}).limit(100)
+      ]);
+      setRows((records||[]) as unknown as Row[]);
+      setVoidableSales((saleRows||[]) as Array<{id:string;receipt_no:string;status:string;total:number;currency:string}>);
+      setVoidMessage("Sale cancelled. Stock was restored and a refund transaction was recorded.");
+    }
+  }
 
   async function saveExpense(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -246,16 +272,9 @@ export default function ModulePage() {
     setSavingShift(true);setShiftMessage("");
     const actual=Number(shiftForm.actual_cash);
     if(!Number.isFinite(actual)||actual<0){setShiftMessage("Enter a valid counted cash amount.");setSavingShift(false);return;}
-    const {data:transactions,error:txError}=await supabase.from("cash_transactions").select("transaction_type,amount,payment_method").eq("shift_id",openShift.id);
-    if(txError){setShiftMessage(txError.message);setSavingShift(false);return;}
-    const cashRows=transactions||[];
-    const cashSales=cashRows.filter(t=>t.payment_method==="cash"&&t.transaction_type==="sale").reduce((n,t)=>n+Number(t.amount),0);
-    const cashOut=cashRows.filter(t=>t.payment_method==="cash"&&["expense","refund","cash_out"].includes(t.transaction_type)).reduce((n,t)=>n+Number(t.amount),0);
-    const expected=Number(openShift.opening_cash)+cashSales-cashOut;
-    const {error:updateError}=await supabase.from("cashier_shifts").update({
-      expected_cash:expected,actual_cash:actual,variance:Number((actual-expected).toFixed(2)),
-      status:"closed",closed_at:new Date().toISOString(),closing_notes:shiftForm.closing_notes.trim()||null
-    }).eq("id",openShift.id);
+    const {error:updateError}=await supabase.rpc("close_cashier_shift",{
+      p_shift_id:openShift.id,p_actual_cash:actual,p_closing_notes:shiftForm.closing_notes.trim()||null
+    });
     if(updateError) setShiftMessage(updateError.message);
     else {setOpenShift(null);setShiftForm(v=>({...v,actual_cash:"",closing_notes:""}));setShiftMessage("Shift closed and cash variance recorded.");}
     setSavingShift(false);
@@ -566,6 +585,16 @@ export default function ModulePage() {
           <button className="btn" type="submit" disabled={savingShift}>{savingShift?"Opening shift…":"Open cashier shift"}</button>
         </form>}
         {shiftMessage && <p className={shiftMessage.includes("opened")||shiftMessage.includes("closed")?"success":"notice"} style={{marginTop:12}}>{shiftMessage}</p>}
+      </section>}
+      {slug==="sales" && (role==="owner" || role==="manager") && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Cancel a completed sale</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>Completed sales are never deleted. Cancellation restores stock, records a refund and keeps the original receipt in the audit trail.</p>
+        <form onSubmit={voidSale} className="formgrid" style={{marginTop:14}}>
+          <label>Receipt<select required value={voidForm.sale_id} onChange={e=>setVoidForm(v=>({...v,sale_id:e.target.value}))}><option value="">Choose posted sale</option>{voidableSales.map(s=><option key={s.id} value={s.id}>{s.receipt_no} · {s.currency} {Number(s.total).toFixed(2)}</option>)}</select></label>
+          <label>Reason for cancellation<input required minLength={5} value={voidForm.reason} onChange={e=>setVoidForm(v=>({...v,reason:e.target.value}))} placeholder="Explain why this sale is being cancelled"/></label>
+          <button className="btn" type="submit" disabled={voidableSales.length===0}>Cancel sale & restore stock</button>
+        </form>
+        {voidMessage && <p className={voidMessage.startsWith("Sale cancelled")?"success":"notice"} style={{marginTop:12}}>{voidMessage}</p>}
       </section>}
       {slug==="sales" && <section className="card" style={{marginBottom:16}}>
         <h2 className="section-title">Point of sale</h2>
