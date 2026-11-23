@@ -50,13 +50,18 @@ export default function ModulePage() {
   const [supplierForm,setSupplierForm] = useState({name:"",contact_name:"",phone:"",email:"",address:"",notes:""});
   const [savingSupplier,setSavingSupplier] = useState(false);
   const [supplierMessage,setSupplierMessage] = useState("");
-  const [departments,setDepartments] = useState<Array<{id:string;name:string}>>([]);
+  const [departments,setDepartments] = useState<Array<{id:string;name:string;code?:string}>>([]);
   const [products,setProducts] = useState<Array<{id:string;name:string;unit:string;department_id:string}>>([]);
   const [productForm,setProductForm] = useState({name:"",category:"",animal_type:"",cut_name:"",grade:"",unit:"kg",department_id:"",barcode:"",track_expiry:false});
   const [stockForm,setStockForm] = useState({department_id:"",product_id:"",batch_code:"",quantity:"",unit_cost:"0",expiry_date:""});
   const [savingProduct,setSavingProduct] = useState(false);
   const [savingStock,setSavingStock] = useState(false);
   const [stockMessage,setStockMessage] = useState("");
+  const [suppliers,setSuppliers] = useState<Array<{id:string;name:string}>>([]);
+  const [carcassForm,setCarcassForm] = useState({department_id:"",supplier_id:"",carcass_code:"",grade:"Commercial",input_weight_kg:"",purchase_price_per_kg:"",invoice_no:""});
+  const [savingCarcass,setSavingCarcass] = useState(false);
+  const [carcassMessage,setCarcassMessage] = useState("");
+
 
 
 
@@ -72,14 +77,20 @@ export default function ModulePage() {
       setRole(membership.role as Role); setBusinessId(membership.business_id);
       const [business, departments, records] = await Promise.all([
         supabase.from("businesses").select("name,base_currency").eq("id",membership.business_id).single(),
-        supabase.from("departments").select("id,name").eq("business_id",membership.business_id).eq("active",true),
+        supabase.from("departments").select("id,name,code").eq("business_id",membership.business_id).eq("active",true),
         section.table==="businesses" ? supabase.from("businesses").select(section.columns.join(",")).eq("id",membership.business_id).order("created_at",{ascending:false}).limit(1) : supabase.from(section.table).select(section.columns.join(",")).eq("business_id",membership.business_id).order(section.table==="sales"?"sold_at":section.table==="cashier_shifts"?"opened_at":section.table==="expenses"?"incurred_at":section.table==="purchases"?"purchase_date":section.table==="beef_carcasses"?"received_at":section.table==="stock_batches"?"received_at":"created_at",{ascending:false}).limit(100)
       ]);
       if (!alive) return;
       setBusinessName(business.data?.name || "Business"); setCurrency(business.data?.base_currency || "USD");
       setDepartmentCount(departments.data?.length || 0);
-      const deptRows=(departments.data||[]) as Array<{id:string;name:string}>;
+      const deptRows=(departments.data||[]) as Array<{id:string;name:string;code?:string}>;
       setDepartments(deptRows);
+      if (slug==="processing") {
+        const {data:supplierRows}=await supabase.from("suppliers").select("id,name").eq("business_id",membership.business_id).eq("active",true).order("name");
+        setSuppliers((supplierRows||[]) as Array<{id:string;name:string}>);
+        const redMeat=deptRows.find(d=>d.code==="red_meat")?.id || membership.department_id || deptRows[0]?.id || "";
+        setCarcassForm(v=>({...v,department_id:v.department_id||redMeat}));
+      }
       if (slug==="stock") {
         const {data:productRows}=await supabase.from("products").select("id,name,unit,department_id").eq("business_id",membership.business_id).eq("active",true).order("name");
         const list=(productRows||[]) as Array<{id:string;name:string;unit:string;department_id:string}>;
@@ -96,6 +107,33 @@ export default function ModulePage() {
   },[router,slug]);
 
 
+
+  async function receiveCarcass(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if(!businessId || !carcassForm.department_id || !carcassForm.carcass_code.trim()) return;
+    setSavingCarcass(true); setCarcassMessage("");
+    const {data:{user}}=await supabase.auth.getUser();
+    const weight=Number(carcassForm.input_weight_kg), price=Number(carcassForm.purchase_price_per_kg);
+    if(!Number.isFinite(weight)||weight<=0||!Number.isFinite(price)||price<0) {
+      setCarcassMessage("Enter a valid carcass weight and a non-negative buying price per kg.");
+      setSavingCarcass(false); return;
+    }
+    const {error:insertError}=await supabase.from("beef_carcasses").insert({
+      business_id:businessId,department_id:carcassForm.department_id,
+      supplier_id:carcassForm.supplier_id||null,carcass_code:carcassForm.carcass_code.trim(),
+      grade:carcassForm.grade,input_weight_kg:weight,purchase_price_per_kg:price,
+      total_purchase_cost:Number((weight*price).toFixed(2)),invoice_no:carcassForm.invoice_no.trim()||null,
+      received_by:user?.id||null,payment_status:"unpaid",status:"received"
+    });
+    if(insertError) setCarcassMessage(insertError.message);
+    else {
+      setCarcassForm(v=>({...v,supplier_id:"",carcass_code:"",input_weight_kg:"",purchase_price_per_kg:"",invoice_no:""}));
+      const {data,error:reloadError}=await supabase.from("beef_carcasses").select(section.columns.join(",")).eq("business_id",businessId).order("received_at",{ascending:false}).limit(100);
+      if(reloadError) setCarcassMessage("Carcass saved, but the register could not refresh: "+reloadError.message);
+      else {setRows((data||[]) as unknown as Row[]);setCarcassMessage("Carcass received and recorded. It is ready for processing.");}
+    }
+    setSavingCarcass(false);
+  }
 
   async function createProduct(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -196,6 +234,22 @@ export default function ModulePage() {
       <div className="grid" style={{gridTemplateColumns:"repeat(3,minmax(0,1fr))"}}>{slug==="sales"||slug==="reports"?<><article className="card"><div className="metric-label">Sales in loaded records</div><div className="metric">{currency} {totals.sales.toFixed(2)}</div></article><article className="card"><div className="metric-label">Cost of goods sold</div><div className="metric">{currency} {totals.cogs.toFixed(2)}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:slug==="expenses"?<><article className="card"><div className="metric-label">Loaded expenses</div><div className="metric">{currency} {totals.expenses.toFixed(2)}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article></>:<><article className="card"><div className="metric-label">Records shown</div><div className="metric">{rows.length}</div></article><article className="card"><div className="metric-label">Departments</div><div className="metric">{departmentCount}</div></article><article className="card"><div className="metric-label">Workspace</div><div className="metric" style={{fontSize:18}}>{role?.replace("_"," ")}</div></article></>}</div>
 
 
+      {slug==="processing" && (role==="owner" || role==="manager" || role==="stock_clerk") && <section className="card" style={{marginBottom:16}}>
+        <h2 className="section-title">Receive a beef carcass</h2>
+        <p className="muted" style={{fontSize:12,marginTop:6}}>Record each carcass separately so its grade, supplier, weight and purchase cost remain traceable through cutting.</p>
+        <form onSubmit={receiveCarcass} className="formgrid" style={{marginTop:14}}>
+          <label>Carcass ID / tag<input required value={carcassForm.carcass_code} onChange={e=>setCarcassForm(v=>({...v,carcass_code:e.target.value}))} placeholder="e.g. BEEF-2026-001"/></label>
+          <label>Department<select required value={carcassForm.department_id} onChange={e=>setCarcassForm(v=>({...v,department_id:e.target.value}))}>{departments.filter(d=>d.code==="red_meat").map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+          <label>Grade<select value={carcassForm.grade} onChange={e=>setCarcassForm(v=>({...v,grade:e.target.value}))}><option>Commercial</option><option>Economy</option><option>Super</option></select></label>
+          <label>Supplier<select value={carcassForm.supplier_id} onChange={e=>setCarcassForm(v=>({...v,supplier_id:e.target.value}))}><option value="">Select supplier (optional)</option>{suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+          <label>Carcass weight (kg)<input required type="number" min="0.001" step="0.001" value={carcassForm.input_weight_kg} onChange={e=>setCarcassForm(v=>({...v,input_weight_kg:e.target.value}))} placeholder="0.000"/></label>
+          <label>Buying price per kg<input required type="number" min="0" step="0.01" value={carcassForm.purchase_price_per_kg} onChange={e=>setCarcassForm(v=>({...v,purchase_price_per_kg:e.target.value}))} placeholder="0.00"/></label>
+          <label>Invoice number<input value={carcassForm.invoice_no} onChange={e=>setCarcassForm(v=>({...v,invoice_no:e.target.value}))} placeholder="Supplier invoice"/></label>
+          <div className="notice">Carcass purchase cost: {currency} {(Number(carcassForm.input_weight_kg||0)*Number(carcassForm.purchase_price_per_kg||0)).toFixed(2)}</div>
+          <button className="btn" type="submit" disabled={savingCarcass}>{savingCarcass?"Saving carcass…":"Record carcass"}</button>
+        </form>
+        {carcassMessage && <p className={carcassMessage.includes("recorded")?"success":"notice"} style={{marginTop:12}}>{carcassMessage}</p>}
+      </section>}
       {slug==="stock" && (role==="owner" || role==="manager" || role==="stock_clerk") && <>
         <section className="card" style={{marginBottom:16}}>
           <h2 className="section-title">Product catalogue</h2>
