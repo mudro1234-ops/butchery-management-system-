@@ -66,7 +66,7 @@ export default function ModulePage() {
       if (!alive) return;
       setBusinessName(business.data?.name || "Business"); setCurrency(business.data?.base_currency || "USD");
       setDepartmentCount(departments.data?.length || 0);
-      if (records.error) setError(records.error.message); else setRows((records.data || []) as Row[]);
+      if (records.error) setError(records.error.message); else setRows((records.data || []) as unknown as Row[]);
       setLoading(false);
     })();
     return () => { alive = false; };
